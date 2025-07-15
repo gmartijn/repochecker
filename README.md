@@ -46,13 +46,26 @@ Run the script with the following command:
    ```bash  
     python githubaudit.py <owner> <repo>  
  
+## Alternatives 〽️
 
+Just download the release (currently version 1.0) and run the executable with the owner and repository.
+
+e.g. 
+
+1. EXAMPLE CLI
+    ```bash
+    githubaudit.exe <owner> <repo>
 
 ### Sample Output
 
 1. So lets just say you want to check out https://github.com/octocat/hello-world
     ```bash
     python githubaudit.py octocat hello-world 
+
+    or 
+2. 
+    ```bash
+    githubaudit.exe octocat hello-world
 
 
 
