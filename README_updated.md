@@ -39,17 +39,17 @@ Use these scripts individually, depending on what part of your tech stack you're
 
 ### GitHub Repository Audit
 ```bash
-python githubaudit.py --repo <owner/repo>
+python githubaudit.py 
 ```
 
 ### Dockerfile Audit
 ```bash
-python dockeraudit.py --file path/to/Dockerfile
+python dockeraudit.py 
 ```
 
 ### NPM Package Audit
 ```bash
-python npmaudit.py --path path/to/npm/project
+python npmaudit.py 
 ```
 
 ## Requirements 📦
