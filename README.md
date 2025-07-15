@@ -88,6 +88,75 @@ issue_count: The number of open issues in the repository.
 trust_score: A numerical score representing the trustworthiness of the repository.
 risk_level: A qualitative assessment of the risk associated with the repository.
 
+# Trust Score Calculation Algorithm 📊  
+  
+The **trust_score** is a numerical representation of the trustworthiness of a GitHub repository. The score is calculated based on several factors, each contributing to the overall score in a weighted manner. Below are the components used in the calculation:  
+  
+## Components of Trust Score  
+  
+1. **Repository Activity (30%)**  
+   - **Criteria**: Number of commits in the last 90 days.  
+   - **Scoring**:   
+     - 0 commits: 0 points  
+     - 1-5 commits: 25 points  
+     - 6-15 commits: 50 points  
+     - 16+ commits: 100 points  
+  
+2. **Active Developers (20%)**  
+   - **Criteria**: Number of unique contributors in the last 90 days.  
+   - **Scoring**:  
+     - 0 contributors: 0 points  
+     - 1 contributor: 20 points  
+     - 2-3 contributors: 40 points  
+     - 4+ contributors: 100 points  
+  
+3. **Issue Resolution Rate (20%)**  
+   - **Criteria**: Percentage of closed issues to total issues.  
+   - **Scoring**:  
+     - 0%: 0 points  
+     - 1-50%: 50 points  
+     - 51-100%: 100 points  
+  
+4. **License Type (15%)**  
+   - **Criteria**: Type of license used (open-source vs. proprietary).  
+   - **Scoring**:  
+     - Proprietary: 0 points  
+     - Open-source (e.g., MIT, Apache 2.0): 100 points  
+  
+5. **Security Policy (15%)**  
+   - **Criteria**: Whether the repository has a security policy.  
+   - **Scoring**:  
+     - No security policy: 0 points  
+     - Security policy present: 100 points  
+  
+## Trust Score Calculation Formula  
+  
+The trust score is calculated using the following formula:  
+
+trust_score = (activity_score * 0.30) + (developer_score * 0.20) + (issue_resolution_score * 0.20) + (license_score * 0.15) + (security_score * 0.15)
+
+  
+### Example Calculation  
+  
+Assume the following scores were derived from the criteria above:  
+  
+- Repository Activity Score: 75 points  
+- Active Developers Score: 40 points  
+- Issue Resolution Rate Score: 100 points  
+- License Score: 100 points  
+- Security Policy Score: 100 points  
+  
+Using the formula:  
+
+trust_score = (75 * 0.30) + (40 * 0.20) + (100 * 0.20) + (100 * 0.15) + (100 * 0.15)
+trust_score = 22.5 + 8 + 20 + 15 + 15 = 80.5 
+
+  
+Thus, the calculated **trust_score** would be **80.5**.  
+  
+## Conclusion  
+  
+The trust_score provides a quantitative measure of a repository's reliability and activity. Higher scores indicate more active, well-maintained, and secure repositories, making them more trustworthy for use in projects.  
 
 ### Disclaimer ⚠️⚛️🪖
  
