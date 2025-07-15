@@ -73,26 +73,11 @@ Output of the CLI
     "risk_level": "Low Risk"  
 }  
  
-
-## Explanation of the Output 🤯
- 
-
-repository: The full name of the repository (owner/repo).
-last_commit_date: The date of the most recent commit to the repository.
-active_developers_last_90_days: The number of developers who have contributed in the last 90 days.
-license: The license under which the repository is released.
-security_policy: Indicates whether a security policy is in place.
-language: The primary programming language used in the repository.
-has_issues: Indicates if the repository has issues enabled.
-issue_count: The number of open issues in the repository.
-trust_score: A numerical score representing the trustworthiness of the repository.
-risk_level: A qualitative assessment of the risk associated with the repository.
-
 # Trust Score Calculation Algorithm 📊  
   
 The **trust_score** is a numerical representation of the trustworthiness of a GitHub repository. The score is calculated based on several factors, each contributing to the overall score in a weighted manner. Below are the components used in the calculation:  
   
-## Components of Trust Score  
+## Components of Trust Score 🤓
   
 1. **Repository Activity (30%)**  
    - **Criteria**: Number of commits in the last 90 days.  
@@ -129,14 +114,14 @@ The **trust_score** is a numerical representation of the trustworthiness of a Gi
      - No security policy: 0 points  
      - Security policy present: 100 points  
   
-## Trust Score Calculation Formula  
+## Trust Score Calculation Formula  🧑‍🔬
   
 The trust score is calculated using the following formula:  
 
 trust_score = (activity_score * 0.30) + (developer_score * 0.20) + (issue_resolution_score * 0.20) + (license_score * 0.15) + (security_score * 0.15)
 
   
-### Example Calculation  
+### Example Calculation  👈
   
 Assume the following scores were derived from the criteria above:  
   
@@ -154,7 +139,7 @@ trust_score = 22.5 + 8 + 20 + 15 + 15 = 80.5
   
 Thus, the calculated **trust_score** would be **80.5**.  
   
-## Conclusion  
+## Conclusion  🏁
   
 The trust_score provides a quantitative measure of a repository's reliability and activity. Higher scores indicate more active, well-maintained, and secure repositories, making them more trustworthy for use in projects.  
 
