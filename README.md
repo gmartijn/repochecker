@@ -116,6 +116,16 @@ python githubaudit.py octocat Hello-World
 
 *You're now officially too cool to manually check licenses.*
 
+### Bonus: Quick Start for NPM Audit
+
+Feeling brave? Audit an NPM package in one line:
+
+```bash
+python npmaudit.py express --checkdependencies
+```
+
+This will judge `express` and all its dependencies. Side effects may include mild enlightenment or existential dread. Your call.
+
 ---
 
 ## Installation 🛠
