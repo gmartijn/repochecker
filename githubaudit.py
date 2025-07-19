@@ -2,9 +2,10 @@ import os
 import sys
 import json
 import requests
+import argparse
 import warnings
 from datetime import datetime, timedelta, timezone
-
+from requests.packages.urllib3.exceptions import InsecureRequestWarning
 
 # ┌─────────────────────────────────────────────────────────────────────────────┐  
 # │                        Github Audit Script                                  │  
@@ -18,119 +19,143 @@ from datetime import datetime, timedelta, timezone
 # │  Happy auditing!                                                            │  
 # └─────────────────────────────────────────────────────────────────────────────┘  
 
-from requests.packages.urllib3.exceptions import InsecureRequestWarning
 warnings.simplefilter('ignore', InsecureRequestWarning)
 
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")
 HEADERS = {
-    "Accept": "application/vnd.github+json",
-    "Authorization": f"token {GITHUB_TOKEN}" if GITHUB_TOKEN else None
+    "Accept": "application/vnd.github+json"
 }
+if GITHUB_TOKEN:
+    HEADERS["Authorization"] = f"token {GITHUB_TOKEN}"
 
-def get_repo_info(owner, repo):
+def check_rate_limit(r):
+    if r.status_code == 403 and r.headers.get('X-RateLimit-Remaining') == '0':
+        reset_time = int(r.headers.get("X-RateLimit-Reset", 0))
+        wait_until = datetime.fromtimestamp(reset_time).strftime('%Y-%m-%d %H:%M:%S UTC')
+        print(f"❗ GitHub API rate limit reached. Try again after {wait_until}.")
+        sys.exit(1)
+
+def get_repo_info(owner, repo, verify_ssl):
     url = f"https://api.github.com/repos/{owner}/{repo}"
     try:
-        r = requests.get(url, headers=HEADERS, verify=False)
-        if r.status_code == 403 and r.headers.get('X-RateLimit-Remaining') == '0':
-            print("❗ GitHub API rate limit reached. Use a token or wait.")
-            sys.exit(1)
+        r = requests.get(url, headers=HEADERS, verify=verify_ssl)
+        check_rate_limit(r)
         r.raise_for_status()
         data = r.json()
-        language = data.get("language", "Unknown")
-        has_issues = data.get("has_issues", False)
         return {
             "name": data["full_name"],
             "license": data["license"]["name"] if data.get("license") else "None",
-            "language": language,
-            "has_issues": has_issues
+            "language": data.get("language", "Unknown"),
+            "issue_tracking_enabled": data.get("has_issues", False)
         }
-    except Exception:
-        return {"name": f"{owner}/{repo}", "license": "Error", "language": "Unknown", "has_issues": False}
+    except Exception as e:
+        print(f"⚠️ Error fetching repo info: {e}")
+        return {"name": f"{owner}/{repo}", "license": "Error", "language": "Unknown", "issue_tracking_enabled": False}
 
-def get_issues_count(owner, repo):
-    count = 0
-    page = 1
-    while True:
-        url = f"https://api.github.com/repos/{owner}/{repo}/issues?state=all&per_page=100&page={page}"
-        r = requests.get(url, headers=HEADERS, verify=False)
-        if r.status_code != 200:
-            break
-        issues = r.json()
-        if not issues:
-            break
-        count += sum(1 for issue in issues if 'pull_request' not in issue)
-        page += 1
-    return count
+def get_issues_count(owner, repo, verify_ssl):
+    url = f"https://api.github.com/search/issues?q=repo:{owner}/{repo}+type:issue"
+    try:
+        r = requests.get(url, headers=HEADERS, verify=verify_ssl)
+        check_rate_limit(r)
+        if r.status_code == 200:
+            return r.json().get("total_count", 0)
+    except Exception as e:
+        print(f"⚠️ Error fetching issue count: {e}")
+    return 0
 
-def get_last_commit_date(owner, repo):
+def get_last_commit_date(owner, repo, verify_ssl):
     url = f"https://api.github.com/repos/{owner}/{repo}/commits"
     try:
-        r = requests.get(url, headers=HEADERS, verify=False)
+        r = requests.get(url, headers=HEADERS, verify=verify_ssl)
+        check_rate_limit(r)
         r.raise_for_status()
         commits = r.json()
-        if not commits:
-            return None
-        return commits[0]["commit"]["committer"]["date"]
-    except Exception:
-        return None
+        if commits:
+            return commits[0]["commit"]["committer"]["date"]
+    except Exception as e:
+        print(f"⚠️ Error fetching commits: {e}")
+    return None
 
-def get_active_developers(owner, repo, days=90):
+def get_active_developers(owner, repo, verify_ssl, days=90):
     since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat().replace('+00:00', 'Z')
-    devs = []
+    devs = set()
     page = 1
     while True:
         url = f"https://api.github.com/repos/{owner}/{repo}/commits?since={since}&per_page=100&page={page}"
         try:
-            r = requests.get(url, headers=HEADERS, verify=False)
+            r = requests.get(url, headers=HEADERS, verify=verify_ssl)
+            check_rate_limit(r)
             r.raise_for_status()
             commits = r.json()
             if not commits:
                 break
-            devs.extend([c["commit"]["author"]["email"] for c in commits if c["commit"].get("author")])
+            for c in commits:
+                if c.get("author") and c["author"].get("login"):
+                    devs.add(c["author"]["login"])
             page += 1
-        except Exception:
+        except Exception as e:
+            print(f"⚠️ Error fetching active developers: {e}")
             break
-    return len(set(devs))
+    return len(devs)
 
-def has_security_policy(owner, repo):
-    possible_paths = [".github/SECURITY.md", "SECURITY.md", "docs/SECURITY.md"]
-    for path in possible_paths:
+def has_security_policy(owner, repo, verify_ssl):
+    paths = [".github/SECURITY.md", "SECURITY.md", "docs/SECURITY.md"]
+    for path in paths:
         url = f"https://api.github.com/repos/{owner}/{repo}/contents/{path}"
-        r = requests.get(url, headers=HEADERS, verify=False)
-        if r.status_code == 200:
-            return True
+        try:
+            r = requests.get(url, headers=HEADERS, verify=verify_ssl)
+            check_rate_limit(r)
+            if r.status_code == 200:
+                return True
+        except:
+            pass
     return False
 
-def score_repo(last_commit_date, num_devs, license_type, has_policy, language, has_issues, issue_count):
+def score_repo(last_commit_date, num_devs, license_type, has_policy, language, has_open_or_closed_issues, issue_count):
     total_criteria = 6
     score = 0
 
+    # Recent commit
     if last_commit_date:
         last_commit = datetime.strptime(last_commit_date, "%Y-%m-%dT%H:%M:%SZ")
-        days_since_last = (datetime.now(timezone.utc) - last_commit.replace(tzinfo=timezone.utc)).days
-        if days_since_last < 90:
+        if (datetime.now(timezone.utc) - last_commit.replace(tzinfo=timezone.utc)).days < 90:
             score += 1
 
+    # Developer activity
     if num_devs >= 5:
         score += 1
 
-    if license_type != "None":
-        score += 1
+    # License scoring
+    license_score = 0
+    if license_type:
+        normalized = license_type.lower()
+        if "mit" in normalized or "apache" in normalized:
+            license_score = 1
+        elif "gpl" in normalized:
+            license_score = 0.5
+        elif "mpl" in normalized or "lgpl" in normalized:
+            license_score = 0
+        else:
+            license_score = -1
+    score += license_score
 
+    # Security policy
     if has_policy:
         score += 1
 
-    modern_languages = ["Python", "JavaScript", "Go", "Rust", "Swift", "Kotlin", "Java", "C#"]
-    if language in modern_languages:
+    # Language preference
+    if language in ["Python", "JavaScript", "Go", "Rust", "Swift", "Kotlin", "Java", "C#"]:
         score += 1
 
-    if has_issues:
+    # Issues present
+    if has_open_or_closed_issues:
         score += 1
 
+    # Penalize too many issues
     if issue_count > 10:
         score -= 1
 
-    return (score / total_criteria) * 100
+    return max(0, (score / total_criteria) * 100)
 
 def get_risk_level(score):
     if score >= 80:
@@ -144,28 +169,31 @@ def get_risk_level(score):
     else:
         return "Critical Risk"
 
-def audit_repository(owner, repo, output_file="repo_audit.json"):
-    print("\n⚠️  Note: This script evaluates repositories based on various criteria,")
-    print("    including activity, license, and security policies.")
-    print("    However, it does NOT factor in the reputation of the vendor or")
-    print("    maintainer of the repository. Use discretion when interpreting the results.\n")
+def audit_repository(owner, repo, verify_ssl, output_file="repo_audit.json"):
+    print(f"\n🔍 Auditing {owner}/{repo}...\n")
 
-    repo_info = get_repo_info(owner, repo)
-    issue_count = get_issues_count(owner, repo)
-    last_commit = get_last_commit_date(owner, repo)
-    num_devs = get_active_developers(owner, repo)
-    policy = has_security_policy(owner, repo)
-    trust_score = score_repo(last_commit, num_devs, repo_info["license"], policy, repo_info["language"], repo_info["has_issues"], issue_count)
+    repo_info = get_repo_info(owner, repo, verify_ssl)
+    issue_count = get_issues_count(owner, repo, verify_ssl)
+    last_commit = get_last_commit_date(owner, repo, verify_ssl)
+    num_devs = get_active_developers(owner, repo, verify_ssl)
+    policy = has_security_policy(owner, repo, verify_ssl)
+    has_open_or_closed_issues = issue_count > 0
+    trust_score = score_repo(
+        last_commit, num_devs, repo_info["license"], policy,
+        repo_info["language"], has_open_or_closed_issues, issue_count
+    )
     risk_level = get_risk_level(trust_score)
 
     result = {
+        "timestamp": datetime.utcnow().isoformat() + "Z",
         "repository": repo_info["name"],
         "last_commit_date": last_commit,
         "active_developers_last_90_days": num_devs,
         "license": repo_info["license"],
         "security_policy": policy,
         "language": repo_info["language"],
-        "has_issues": repo_info["has_issues"],
+        "issue_tracking_enabled": repo_info["issue_tracking_enabled"],
+        "has_open_or_closed_issues": has_open_or_closed_issues,
         "issue_count": issue_count,
         "trust_score": trust_score,
         "risk_level": risk_level
@@ -175,10 +203,33 @@ def audit_repository(owner, repo, output_file="repo_audit.json"):
 
     with open(output_file, "w") as f:
         json.dump(result, f, indent=4)
-    print(f"Audit saved to {output_file}")
+    print(f"✅ Audit saved to {output_file}")
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Audit a GitHub repository based on activity, license, developers, and risk scoring.\n\n"
+                    "Scoring logic:\n"
+                    " - +1 if last commit was within 90 days\n"
+                    " - +1 if 5+ developers committed in last 90 days\n"
+                    " - +1 if license is MIT or Apache\n"
+                    " - +0.5 if license is GPL\n"
+                    " -  0 if license is MPL or LGPL\n"
+                    " - -1 if no license or unknown license\n"
+                    " - +1 if SECURITY.md is found\n"
+                    " - +1 if a modern language is used (Python, JS, etc)\n"
+                    " - +1 if any issues are present\n"
+                    " - -1 if issue count > 10\n",
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    parser.add_argument("owner", help="GitHub repository owner (e.g. 'octocat')")
+    parser.add_argument("repo", help="GitHub repository name (e.g. 'Hello-World')")
+    parser.add_argument("--skipssl", action="store_true", help="Skip SSL certificate verification")
+    parser.add_argument("--output", default="repo_audit.json", help="Output file for audit results (default: repo_audit.json)")
+
+    args = parser.parse_args()
+    verify_ssl = not args.skipssl
+
+    audit_repository(args.owner, args.repo, verify_ssl, output_file=args.output)
 
 if __name__ == "__main__":
-    if len(sys.argv) < 3:
-        print("Usage: python github_repo_audit.py <owner> <repo>")
-        sys.exit(1)
-    audit_repository(sys.argv[1], sys.argv[2])
+    main()

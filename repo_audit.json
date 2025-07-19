@@ -1,11 +1,13 @@
 {
-    "repository": "Thymooooo/Body-armor-script",
-    "last_commit_date": "2025-04-08T20:54:06Z",
+    "timestamp": "2025-07-19T18:27:30.566813Z",
+    "repository": "Vertex-Scripts/react-boilerplate",
+    "last_commit_date": "2024-06-10T18:49:35Z",
     "active_developers_last_90_days": 0,
-    "license": "None",
+    "license": "MIT License",
     "security_policy": false,
-    "language": "Lua",
-    "has_issues": true,
+    "language": "TypeScript",
+    "issue_tracking_enabled": true,
+    "has_open_or_closed_issues": false,
     "issue_count": 0,
     "trust_score": 16.666666666666664,
     "risk_level": "Critical Risk"
