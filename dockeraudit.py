@@ -230,12 +230,14 @@ Example usage:
 
     if not args.json:
         print("🔎 Auditing Docker image:", image_name)
-        print("⚠️  This tool evaluates trust based on metadata only.\n")
+        print("⚠️  ⚠️  ⚠️  ⚠️  ⚠️  ⚠️  ⚠️  ⚠️  ⚠️  ⚠️  ⚠️  ⚠️  ⚠️")
+        print("This tool evaluates trust based on metadata only.\n")
+        print("It does not evaluate code quality or image contents. Use discretion..\n")
 
     image_info = get_docker_image_info(image_name, verify=verify_ssl)
     if not image_info:
         print("❌ Failed to fetch image info.")
-        sys.exit(1)
+        sys.exit( )
 
     org_info = get_org_info(owner, verify=verify_ssl)
     user_type = analyze_namespace(owner, verify=verify_ssl)
