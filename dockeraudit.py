@@ -6,6 +6,17 @@ from datetime import datetime, timezone
 
 DOCKER_HUB_API = "https://hub.docker.com/v2"
 
+# ┌─────────────────────────────────────────────────────────────────────────────┐  
+# │                        Docker Audit Script                                  │  
+# │                                                                             │  
+# │  Note: This script evaluates Docker images based on various criteria,       │  
+# │  including activity, license, and security policies.                        │  
+# │  However, please be aware that it does NOT 100 % factor in the reputation   │  
+# │  of the vendor or maintainer of the image. Use discretion when              │  
+# │  interpreting the results.                                                  │  
+# │                                                                             │  
+# │  Happy auditing!                                                            │  
+# └─────────────────────────────────────────────────────────────────────────────┘  
 
 def get_docker_image_info(image_name, verify=True):
     url = f"https://registry.hub.docker.com/v2/repositories/{image_name}/"
