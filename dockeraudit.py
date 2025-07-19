@@ -1,225 +1,206 @@
-import requests  
-import json  
-import sys  
-import os  
-from datetime import datetime, timezone  
-  
-# ┌─────────────────────────────────────────────────────────────────────────────┐  
-# │                          Docker Hub Image Audit Script                      │  
-# │                                                                           │  
-# │  Note: This script evaluates Docker images based on various criteria,      │  
-# │  including popularity, activity, and maintenance.                          │  
-# │  Use discretion when interpreting the results.                             │  
-# │                                                                           │  
-# │  Happy auditing!                                                           │  
-# └─────────────────────────────────────────────────────────────────────────────┘  
-  
-# Suppress error messages  
-devnull = open(os.devnull, 'w')  
-sys.stderr = devnull  
-  
-DOCKER_HUB_API = "https://hub.docker.com/v2"  
-  
-def get_docker_image_info(image_name):  
-    url = f"https://registry.hub.docker.com/v2/repositories/{image_name}/"  
-    try:  
-        response = requests.get(url, verify=False)  # Disable SSL verification  
-        response.raise_for_status()  
-        return response.json()  
-    except Exception:  
-        return None  
-  
-def get_owner_info(owner):  
-    url = f"{DOCKER_HUB_API}/users/{owner}/"  
-    try:  
-        response = requests.get(url, verify=False)  # Disable SSL verification  
-        response.raise_for_status()  
-        return response.json()  
-    except Exception:  
-        return None  
-  
-def get_org_info(org_name):  
-    url = f"{DOCKER_HUB_API}/orgs/{org_name}/"  
-    try:  
-        response = requests.get(url, verify=False)  # Disable SSL verification  
-        response.raise_for_status()  
-        return response.json()  
-    except Exception:  
-        return None  
-  
-def get_user_info(username):  
-    url = f"{DOCKER_HUB_API}/users/{username}/"  
-    r = requests.get(url, verify=False)  # Disable SSL verification  
-    if r.status_code == 404:  
-        return None  
-    r.raise_for_status()  
-    return r.json()  
-  
-def get_repo_count(username):  
-    url = f"{DOCKER_HUB_API}/repositories/{username}/?page_size=1"  
-    r = requests.get(url, verify=False)  # Disable SSL verification  
-    if r.status_code == 404:  
-        return 0  
-    r.raise_for_status()  
-    return r.json().get("count", 0)  
-  
-def classify_user_type(user_data, repo_count):  
-    if not user_data:  
-        return "unknown"  
-    is_org_like = False  
-    # Heuristics  
-    if user_data.get("company") or repo_count >= 10:  
-        is_org_like = True  
-    elif not user_data.get("full_name") and repo_count >= 5:  
-        is_org_like = True  
-    elif user_data.get("full_name") == "" and user_data.get("is_staff"):  
-        is_org_like = True  
-    return "organization" if is_org_like else "individual"  
-  
-def analyze_namespace(namespace):  
-    user_info = get_user_info(namespace)  
-    repo_count = get_repo_count(namespace)  
-    user_type = classify_user_type(user_info, repo_count)  
-    return user_type  
-  
-def get_badge_type(org_info):  
-    """Determine the badge type of the organization."""  
-    badge = org_info.get("badge", "")  
-    if badge == "verified_publisher" or badge == "official_image":  
-        return True  
-    return False  
-  
-def evaluate_image(image_info, owner, org_info, user_type):  
-    # Calculate scores based on the criteria outlined earlier  
-    stars = image_info.get("star_count", 0)  
-    last_updated = image_info.get("last_updated")  
-    pull_count = image_info.get("pull_count", 0)  
-    tags_count = image_info.get("tag_count", 0)  
-    is_active = org_info.get("is_active", False) if org_info else False  
-    is_signed_or_verified = image_info.get("is_signed", False) or image_info.get("is_verified", False)  
-  
-    # Initialize score  
-    score = 0  
-  
-    # Stars score  
-    score += min(stars / 100 * 20, 20)  
-  
-    # Last updated score  
-    if last_updated:  
-        last_updated_date = datetime.strptime(last_updated, "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=timezone.utc)  
-        days_since_update = (datetime.now(timezone.utc) - last_updated_date).days  
-        if days_since_update <= 30:  
-            score += 20  
-        elif days_since_update <= 60:  
-            score += 15  
-        elif days_since_update <= 90:  
-            score += 10  
-  
-    # Pull count score  
-    score += min(pull_count / 1000 * 20, 20)  
-  
-    # Tags count score  
-    score += min(tags_count / 50 * 10, 10)  
-  
-    # Is active score  
-    score += 10 if is_active else 0  
-  
-    # User type score  
-    if user_type == "organization":  
-        score += 10  
-    elif user_type == "individual":  
-        score += 5  
-  
-    # Is signed or verified score  
-    score += 10 if is_signed_or_verified else 0  
-  
-    # Badge type score  
-    if org_info and get_badge_type(org_info):  
-        score += 15  # Add extra trust for verified publishers and official images  
-  
-    # Calculate percentage  
-    percentage = (score / 100) * 100  
-  
-    # Determine trust level  
-    if percentage >= 90:  
-        trust_level = "Critical"  
-    elif percentage >= 75:  
-        trust_level = "High"  
-    elif percentage >= 50:  
-        trust_level = "Medium"  
-    elif percentage >= 25:  
-        trust_level = "Low"  
-    else:  
-        trust_level = "Very Low"  
-  
-    # Prepare result with trust level  
-    result = {  
-        "name": image_info.get("name"),  
-        "description": image_info.get("description", "No description available"),  
-        "stars": stars,  
-        "tags_count": tags_count,  
-        "last_updated": last_updated,  
-        "pull_count": pull_count,  
-        "owner": owner,  
-        "organization": org_info.get("full_name") if org_info else "No organization info available",  
-        "profile_url": org_info.get("profile_url") if org_info else None,  
-        "badge": org_info.get("badge") if org_info else None,  
-        "is_active": is_active,  
-        "user_type": user_type,  
-        "tags": image_info.get("tags", []),  
-        "trust_level": trust_level,  
-        "percentage": percentage  
-    }  
-  
-    return result  
-  
-def audit_repository(owner, repo, output_file="repo_audit.json"):  
-    # Display the warning at the start of the audit  
-    print("\n⚠️  Note: This script evaluates repositories based on various criteria,")  
-    print("    including activity, license, and security policies.")  
-    print("    However, it does NOT factor in the reputation of the vendor or")  
-    print("    maintainer of the repository. Use discretion when interpreting the results.\n")  
-  
-def main(image_name):  
-    # Display warning for the repository audit  
-    owner = image_name.split('/')[0]  # Get the part before the first '/'  
-    repo = image_name.split('/')[1] if '/' in image_name else None  
-    audit_repository(owner, repo)  
-  
-    image_info = get_docker_image_info(image_name)  
-    if image_info:  
-        # Get owner information  
-        owner_info = get_owner_info(owner)  
-  
-        # Get organization information  
-        org_info = get_org_info(owner)  # Assuming the owner is the organization name  
-  
-        # Determine user type  
-        user_type = analyze_namespace(owner)  
-  
-        evaluated_result = evaluate_image(image_info, owner, org_info, user_type)  
-  
-        # Print summary before detailed result  
-        print("\nDocker Image Audit Summary:")  
-        print(f"Trust Level: {evaluated_result['trust_level']}")  
-        print(f"Percentage: {evaluated_result['percentage']:.2f}%\n")  
-  
-        # Print detailed result to console  
-        print("Docker Image Audit Result:")  
-        print(json.dumps(evaluated_result, indent=4))  
-  
-        # Write result to docker_audit.json  
-        try:  
-            with open('docker_audit.json', 'w') as json_file:  
-                json.dump(evaluated_result, json_file, indent=4)  
-                print("\nResults written to docker_audit.json")  
-        except Exception:  
-            print("An error occurred while writing results to docker_audit.json.")  
-  
-if __name__ == "__main__":  
-    if len(sys.argv) < 2:  
-        print("Usage: python docker_image_audit.py <image_name>")  
-        sys.exit(1)  
-  
-    image_name = sys.argv[1]  
-    main(image_name)  
+import requests
+import json
+import sys
+import argparse
+from datetime import datetime, timezone
+
+DOCKER_HUB_API = "https://hub.docker.com/v2"
+
+def get_docker_image_info(image_name, verify=True):
+    url = f"https://registry.hub.docker.com/v2/repositories/{image_name}/"
+    try:
+        response = requests.get(url, verify=verify)
+        response.raise_for_status()
+        return response.json()
+    except Exception:
+        return None
+
+def get_user_info(username, verify=True):
+    url = f"{DOCKER_HUB_API}/users/{username}/"
+    r = requests.get(url, verify=verify)
+    if r.status_code == 404:
+        return None
+    r.raise_for_status()
+    return r.json()
+
+def get_org_info(org_name, verify=True):
+    url = f"{DOCKER_HUB_API}/orgs/{org_name}/"
+    try:
+        response = requests.get(url, verify=verify)
+        response.raise_for_status()
+        return response.json()
+    except Exception:
+        return None
+
+def get_repo_count(username, verify=True):
+    url = f"{DOCKER_HUB_API}/repositories/{username}/?page_size=1"
+    r = requests.get(url, verify=verify)
+    if r.status_code == 404:
+        return 0
+    r.raise_for_status()
+    return r.json().get("count", 0)
+
+def classify_user_type(user_data, repo_count):
+    if not user_data:
+        return "unknown"
+    is_org_like = False
+    if user_data.get("company") or repo_count >= 10:
+        is_org_like = True
+    elif not user_data.get("full_name") and repo_count >= 5:
+        is_org_like = True
+    elif user_data.get("full_name") == "" and user_data.get("is_staff"):
+        is_org_like = True
+    return "organization" if is_org_like else "individual"
+
+def analyze_namespace(namespace, verify=True):
+    user_info = get_user_info(namespace, verify=verify)
+    repo_count = get_repo_count(namespace, verify=verify)
+    user_type = classify_user_type(user_info, repo_count)
+    return user_type
+
+def get_badge_type(org_info):
+    badge = org_info.get("badge", "")
+    return badge in ("verified_publisher", "official_image")
+
+def evaluate_image(image_info, owner, org_info, user_type, show_details=False):
+    stars = image_info.get("star_count", 0)
+    last_updated = image_info.get("last_updated")
+    pull_count = image_info.get("pull_count", 0)
+    tags_count = image_info.get("tag_count", 0)
+    is_active = org_info.get("is_active", False) if org_info else False
+    is_signed_or_verified = image_info.get("is_signed", False) or image_info.get("is_verified", False)
+
+    score = 0
+    details = []
+
+    # Stars
+    stars_score = min(stars / 100 * 20, 20)
+    score += stars_score
+    if show_details: details.append(f"Stars score: {stars_score:.2f}")
+
+    # Last updated
+    if last_updated:
+        last_updated_date = datetime.strptime(last_updated, "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=timezone.utc)
+        days_since_update = (datetime.now(timezone.utc) - last_updated_date).days
+        if days_since_update <= 30:
+            update_score = 20
+        elif days_since_update <= 60:
+            update_score = 15
+        elif days_since_update <= 90:
+            update_score = 10
+        else:
+            update_score = 0
+        score += update_score
+        if show_details: details.append(f"Update score: {update_score} (last updated {days_since_update} days ago)")
+
+    # Pull count
+    pull_score = min(pull_count / 1000 * 20, 20)
+    score += pull_score
+    if show_details: details.append(f"Pull count score: {pull_score:.2f}")
+
+    # Tags
+    tag_score = min(tags_count / 50 * 10, 10)
+    score += tag_score
+    if show_details: details.append(f"Tags score: {tag_score:.2f}")
+
+    # Active status
+    active_score = 10 if is_active else 0
+    score += active_score
+    if show_details: details.append(f"Org active score: {active_score}")
+
+    # User type
+    user_score = 10 if user_type == "organization" else 5 if user_type == "individual" else 0
+    score += user_score
+    if show_details: details.append(f"User type score ({user_type}): {user_score}")
+
+    # Signed/verified
+    signed_score = 10 if is_signed_or_verified else 0
+    score += signed_score
+    if show_details: details.append(f"Signed/verified score: {signed_score}")
+
+    # Badge type
+    badge_score = 15 if org_info and get_badge_type(org_info) else 0
+    score += badge_score
+    if show_details: details.append(f"Badge score: {badge_score}")
+
+    percentage = score
+    if percentage >= 90:
+        trust_level = "Critical"
+    elif percentage >= 75:
+        trust_level = "High"
+    elif percentage >= 50:
+        trust_level = "Medium"
+    elif percentage >= 25:
+        trust_level = "Low"
+    else:
+        trust_level = "Very Low"
+
+    result = {
+        "name": image_info.get("name"),
+        "description": image_info.get("description", "No description available"),
+        "stars": stars,
+        "tags_count": tags_count,
+        "last_updated": last_updated,
+        "pull_count": pull_count,
+        "owner": owner,
+        "organization": org_info.get("full_name") if org_info else "No organization info available",
+        "profile_url": org_info.get("profile_url") if org_info else None,
+        "badge": org_info.get("badge") if org_info else None,
+        "is_active": is_active,
+        "user_type": user_type,
+        "trust_level": trust_level,
+        "percentage": percentage,
+    }
+
+    if show_details:
+        result["score_breakdown"] = details
+
+    return result
+
+def main():
+    parser = argparse.ArgumentParser(description="Audit a Docker image's trustworthiness.")
+    parser.add_argument("image_name", help="Name of the Docker image (e.g. library/ubuntu or nginx)")
+    parser.add_argument("--skipssl", action="store_true", help="Skip SSL certificate verification.")
+    parser.add_argument("--json", action="store_true", help="Output to docker_audit.json only.")
+    parser.add_argument("--score-details", action="store_true", help="Print detailed score breakdown.")
+
+    args = parser.parse_args()
+    verify_ssl = not args.skipssl
+
+    image_name = args.image_name
+    if '/' not in image_name:
+        image_name = f"library/{image_name}"
+
+    owner = image_name.split('/')[0]
+
+    print("🔎 Auditing Docker image:", image_name)
+    if not args.json:
+        print("\n⚠️  This tool does not evaluate code quality or image contents. Use discretion.\n")
+
+    image_info = get_docker_image_info(image_name, verify=verify_ssl)
+    if not image_info:
+        print("❌ Failed to fetch image info.")
+        sys.exit(1)
+
+    org_info = get_org_info(owner, verify=verify_ssl)
+    user_type = analyze_namespace(owner, verify=verify_ssl)
+    evaluated = evaluate_image(image_info, owner, org_info, user_type, show_details=args.score_details)
+
+    if not args.json:
+        print("\nDocker Image Audit Summary:")
+        print(f"Trust Level: {evaluated['trust_level']}")
+        print(f"Score: {evaluated['percentage']:.2f}%")
+
+        print("\nFull Audit Result:")
+        print(json.dumps(evaluated, indent=4))
+
+    try:
+        with open("docker_audit.json", "w") as f:
+            json.dump(evaluated, f, indent=4)
+        if not args.json:
+            print("\n✅ Results written to docker_audit.json")
+    except Exception:
+        print("❌ Failed to write docker_audit.json")
+
+if __name__ == "__main__":
+    main()
