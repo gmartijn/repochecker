@@ -103,6 +103,7 @@ All of this gets lovingly written to `npm_audit.json`—so you can keep it, grep
 Clone the repo, install dependencies, and start judging your code like it owes you money:
 
 ```bash
+### Quick Start for install
 # Grab the scripts
 git clone https://github.com/yourusername/repo-audit-scripts.git
 cd repo-audit-scripts
@@ -110,13 +111,15 @@ cd repo-audit-scripts
 # Feed the beast
 pip install -r requirements.txt
 
-# Run your first audit – GitHub repo example:
+### Quick Start for Github Audit
+
+Run your first audit – GitHub repo example:
 python githubaudit.py octocat Hello-World
 ```
 
 *You're now officially too cool to manually check licenses.*
 
-### Bonus: Quick Start for NPM Audit
+### Quick Start for NPM Audit
 
 Feeling brave? Audit an NPM package in one line:
 
