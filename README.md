@@ -80,7 +80,7 @@ python npmaudit.py <package_name> [--checkdependencies] [--skipssl]
 
 #### 🔎 Example:
 
-```bash`
+```bash
 python npmaudit.py express --checkdependencies --skipssl
 ```
 
