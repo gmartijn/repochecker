@@ -110,9 +110,17 @@ cd repo-audit-scripts
 ```
 
 #### Feed the beast
+Installation 🛠
+
+Install all the required Python goodies with:
+
 ```bash
 pip install -r requirements.txt
 ```
+
+If something breaks, it’s probably because you forgot to activate your virtual environment. Don’t worry—we’ve all done it.
+
+---
 
 ### Quick Start for Github Audit
 
@@ -135,23 +143,6 @@ This will judge `express` and all its dependencies. Side effects may include mil
 
 ---
 
-## Installation 🛠
-
-Install all the required Python goodies with:
-
-```bash
-pip install -r requirements.txt
-```
-
-If something breaks, it’s probably because you forgot to activate your virtual environment. Don’t worry—we’ve all done it.
-
----
-
-## Requirements 📦
-
-All dependencies are in `requirements.txt`. Think of it as your audit script’s grocery list. Feed it well.
-
----
 
 ## License 📄
 
