@@ -140,30 +140,6 @@ If something breaks, it’s probably because you forgot to activate your virtual
 
 ---
 
-## Usage 🚦
-
-Run the scripts individually, depending on what you’re trying to audit, avoid, or blame on someone else.
-
-### GitHub Repository Audit
-
-```bash
-python githubaudit.py octocat Hello-World
-```
-
-### Dockerfile Audit
-
-```bash
-python dockeraudit.py path/to/Dockerfile
-```
-
-### NPM Package Audit
-
-```bash
-python npmaudit.py path/to/package.json
-```
-
----
-
 ## Requirements 📦
 
 All dependencies are in `requirements.txt`. Think of it as your audit script’s grocery list. Feed it well.
