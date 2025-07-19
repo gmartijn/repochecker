@@ -10,15 +10,15 @@ from requests.packages.urllib3.exceptions import InsecureRequestWarning
 warnings.simplefilter('ignore', InsecureRequestWarning)  
   
 # ┌─────────────────────────────────────────────────────────────────────────────┐  
-# │                          NPM Package Audit Script                          │  
-# │                                                                           │  
-# │  Note: This script evaluates NPM packages based on various criteria,      │  
-# │  including activity, license, and security policies.                       │  
-# │  However, please be aware that it does NOT factor in the reputation        │  
-# │  of the vendor or maintainer of the package. Use discretion when          │  
-# │  interpreting the results.                                                 │  
-# │                                                                           │  
-# │  Happy auditing!                                                           │  
+# │                          NPM Package Audit Script                           │  
+# │                                                                             │  
+# │  Note: This script evaluates NPM packages based on various criteria,        │  
+# │  including activity, license, and security policies.                        │  
+# │  However, please be aware that it does NOT factor in the reputation         │  
+# │  of the vendor or maintainer of the package. Use discretion when            │  
+# │  interpreting the results.                                                  │  
+# │                                                                             │  
+# │  Happy auditing!                                                            │  
 # └─────────────────────────────────────────────────────────────────────────────┘  
   
 def print_help():  
