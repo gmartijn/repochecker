@@ -103,13 +103,13 @@ All of this gets lovingly written to `npm_audit.json`—so you can keep it, grep
 Clone the repo, install dependencies, and start judging your code like it owes you money:
 
 ### Quick Start for install
-# Grab the scripts
+#### Grab the scripts
 ```bash
 git clone https://github.com/yourusername/repo-audit-scripts.git
 cd repo-audit-scripts
 ```
 
-# Feed the beast
+#### Feed the beast
 ```bash
 pip install -r requirements.txt
 ```
