@@ -80,7 +80,7 @@ python npmaudit.py <package_name> [--checkdependencies] [--skipssl]
 
 #### 🔎 Example:
 
-```bash
+```bash`
 python npmaudit.py express --checkdependencies --skipssl
 ```
 
@@ -102,18 +102,22 @@ All of this gets lovingly written to `npm_audit.json`—so you can keep it, grep
 
 Clone the repo, install dependencies, and start judging your code like it owes you money:
 
-```bash
 ### Quick Start for install
 # Grab the scripts
+```bash
 git clone https://github.com/yourusername/repo-audit-scripts.git
 cd repo-audit-scripts
+```
 
 # Feed the beast
+```bash
 pip install -r requirements.txt
+```
 
 ### Quick Start for Github Audit
 
 Run your first audit – GitHub repo example:
+```bash
 python githubaudit.py octocat Hello-World
 ```
 
