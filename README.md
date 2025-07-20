@@ -1,4 +1,4 @@
-in# Repository Audit Scripts 🚀
+# Repository Audit Scripts 🚀
 
 Welcome to **Repository Audit Scripts** – the Swiss Army knife for lazy (read: efficient) developers, DevOps gremlins, and security-conscious caffeine addicts. Why manually check things when a script can do it faster, better, and without having to read another 400-page compliance doc?
 
