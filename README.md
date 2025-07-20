@@ -42,60 +42,52 @@ This script snoops through your GitHub repo like a nosy neighbor with an API key
 
 ---
 
-### `dockeraudit.py` – Dockerfile Whisperer 🐳
+### `dockeraudit.py` – Dockerfile Whisperer 🐳🕵️‍♂️
 
-Ever pulled a Docker image and thought, *â€œHmm, hope this wasnâ€™t uploaded by a sleep-deprived intern in 2016â€?* Now you donâ€™t have to guess.
+Ever pulled a Docker image and thought, *“Hmm, hope this wasn’t uploaded by a sleep-deprived intern in 2016”?* Now you don’t have to guess. This script judges your containers faster than your manager judges a 4 p.m. Friday deployment.
 
-#### ðŸ§  What It Actually Does:
+#### 🧠 What It Actually Does:
 
-This script inspects Docker Hub metadata like it's evaluating your online dating profileâ€”fast, judgmental, and a little too honest.
+This script inspects Docker Hub metadata like it's evaluating your online dating profile—fast, judgmental, and a little too honest.
 
-- **â­ Popularity Contest:**  Checks how many stars the image has and scores accordingly. No stars? No love.
+- **⭐ Popularity Contest:** Checks how many stars the image has and scores accordingly. No stars? No love 💔.
+- **📅 Update Freshness:** Calculates how stale the image is. If it hasn’t been updated in 3 months, it’s probably growing cobwebs 🕸️.
+- **📦 Pull Count Flexing:** Measures how many times the image has been pulled. The more, the better. Like social clout, but for containers 💪.
+- **🏷️ Tag Count:** More tags might mean great maintenance—or total chaos. Either way, you’re getting judged 🔍.
+- **🏢 Org Activity Check:** If the publisher is an active org on Docker Hub, trust goes up. If it's a ghost org, you're on your own 👻.
+- **🙋‍♂️ User Type Scoring:** Determines if the uploader is an organization or just some person named “Steve.” Or worse—Steve’s bot.
+- **✅ Signed or Verified:** If it’s signed or verified, that’s a huge green flag. We love commitment 💚.
+- **🎖️ Official/Verified Publisher Badge:** Got a shiny badge? Instant respect. We're easily impressed.
 
-- **ðŸ“… Update Freshness:**  Calculates how stale the image is. If it hasnâ€™t been updated in 3 months, itâ€™s probably not bathing either.
+#### 🧾 Output:
 
-- **ðŸ“¦ Pull Count Flexing:**  Measures how many times the image has been pulled. The more, the better. Like social proof, but for containers.
+- Calculates a **trust score** out of 100.
+- Assigns a **risk level**:
+  - `Very Low` 😬
+  - `Low` 🧐
+  - `Medium` 😐
+  - `High` 😎
+  - `Critical` 🚨 (Yes, that’s actually a *good* thing here.)
 
-- **ðŸ·ï¸ Tag Count:**  More tags can mean better maintenanceâ€¦ or indecision. Either way, you get points.
+- Results are saved to `docker_audit.json`, perfect for spreadsheets, reports, or Slack-shaming your teammates.
 
-- **ðŸ¢ Org Activity Check:**  If the publisher is an active org on Docker Hub, you get bonus trust. Dormant ghost towns lose points.
-
-- **ðŸ™‹ User Type Scoring:**  Determines if the uploader is an individual or an organization. The latter scores higherâ€”sorry, lone wolves.
-
-- **âœ… Signed or Verified:**  If the image is signed or verified, thatâ€™s a green flag.
-
-- **ðŸ”– Official/Verified Publisher Badge:**  If it has a fancy badge, we give it a fancy score bump. Shiny things matter.
-
-#### ðŸ”¢ Output:
-
-- Calculates a **trust score** out of 100 based on all the above
-- Labels it with a **risk level**:
-  - `Very Low`
-  - `Low`
-  - `Medium`
-  - `High`
-  - `Critical` (â† ironically, the best score. Yeah, we may rename this.)
-
-- Dumps the full results into `docker_audit.json`, perfect for grepping, spreadsheets, or blaming in Slack.
-
-#### ðŸ›  Usage:
+#### 🧪 Usage:
 
 ```bash
 python dockeraudit.py <image_name> [--score-details] [--skipssl] [--json]
 ```
 
-#### ðŸ§ª Options:
+#### 🛠️ Options:
 
-- `--score-details`:  Includes a breakdown of exactly how the score was calculated. Great for bragging or debugging.
-- `--skipssl`:  Skips SSL verification (if your network or proxy is... quirky).
-- `--json`:  Outputs only to the JSON file, no terminal output.
+- `--score-details`: Include a breakdown of the score components. For those who want receipts 🧾.
+- `--skipssl`: Skips SSL verification. Use only if you trust your sketchy proxy 😅.
+- `--json`: Outputs results only to the JSON file. No terminal output, no judgment.
 
-#### ðŸ“Ž Example:
+#### 📍 Example:
 
 ```bash
 python dockeraudit.py bitnami/postgresql --score-details
 ```
-
 
 ---
 
