@@ -10,11 +10,12 @@ from requests.packages.urllib3.exceptions import InsecureRequestWarning
 # ┌─────────────────────────────────────────────────────────────────────────────┐  
 # │                        Github Audit Script                                  │  
 # │                                                                             │  
-# │  Note: This script evaluates Github repositories based on various criteria, │  
+# │  This script evaluates Github repositories based on various criteria,      │  
 # │  including activity, license, and security policies.                        │  
-# │  However, please be aware that it does NOT 100 % factor in the reputation   │  
-# │  of the vendor or maintainer of the repo. Use discretion when               │  
-# │  interpreting the results.                                                  │  
+# │  It also flags potentially abandoned repositories.                          │  
+# │                                                                             │  
+# │  Note: This does not fully account for vendor/maintainer reputation.        │  
+# │  Use judgment when interpreting results.                                    │  
 # │                                                                             │  
 # │  Happy auditing!                                                            │  
 # └─────────────────────────────────────────────────────────────────────────────┘  
@@ -27,6 +28,8 @@ HEADERS = {
 }
 if GITHUB_TOKEN:
     HEADERS["Authorization"] = f"token {GITHUB_TOKEN}"
+else:
+    print("⚠️ Warning: No GITHUB_TOKEN set. You may hit rate limits quickly.")
 
 def check_rate_limit(r):
     if r.status_code == 403 and r.headers.get('X-RateLimit-Remaining') == '0':
@@ -114,12 +117,18 @@ def has_security_policy(owner, repo, verify_ssl):
 def score_repo(last_commit_date, num_devs, license_type, has_policy, language, has_open_or_closed_issues, issue_count):
     total_criteria = 6
     score = 0
+    is_abandoned = False
 
     # Recent commit
     if last_commit_date:
         last_commit = datetime.strptime(last_commit_date, "%Y-%m-%dT%H:%M:%SZ")
-        if (datetime.now(timezone.utc) - last_commit.replace(tzinfo=timezone.utc)).days < 90:
+        days_since_commit = (datetime.now(timezone.utc) - last_commit.replace(tzinfo=timezone.utc)).days
+        if days_since_commit < 90:
             score += 1
+        if days_since_commit > 365:
+            is_abandoned = True
+    else:
+        is_abandoned = True
 
     # Developer activity
     if num_devs >= 5:
@@ -155,7 +164,8 @@ def score_repo(last_commit_date, num_devs, license_type, has_policy, language, h
     if issue_count > 10:
         score -= 1
 
-    return max(0, (score / total_criteria) * 100)
+    final_score = max(0, (score / total_criteria) * 100)
+    return final_score, is_abandoned
 
 def get_risk_level(score):
     if score >= 80:
@@ -178,11 +188,16 @@ def audit_repository(owner, repo, verify_ssl, output_file="repo_audit.json"):
     num_devs = get_active_developers(owner, repo, verify_ssl)
     policy = has_security_policy(owner, repo, verify_ssl)
     has_open_or_closed_issues = issue_count > 0
-    trust_score = score_repo(
+
+    trust_score, is_abandoned = score_repo(
         last_commit, num_devs, repo_info["license"], policy,
         repo_info["language"], has_open_or_closed_issues, issue_count
     )
+
     risk_level = get_risk_level(trust_score)
+
+    if is_abandoned:
+        print("⚠️  Warning: This repository appears to be abandoned (no commits in 12+ months).")
 
     result = {
         "timestamp": datetime.utcnow().isoformat() + "Z",
@@ -195,6 +210,7 @@ def audit_repository(owner, repo, verify_ssl, output_file="repo_audit.json"):
         "issue_tracking_enabled": repo_info["issue_tracking_enabled"],
         "has_open_or_closed_issues": has_open_or_closed_issues,
         "issue_count": issue_count,
+        "abandoned": is_abandoned,
         "trust_score": trust_score,
         "risk_level": risk_level
     }
@@ -218,7 +234,8 @@ def main():
                     " - +1 if SECURITY.md is found\n"
                     " - +1 if a modern language is used (Python, JS, etc)\n"
                     " - +1 if any issues are present\n"
-                    " - -1 if issue count > 10\n",
+                    " - -1 if issue count > 10\n"
+                    " - Flag 'abandoned' if no commit in 12+ months\n",
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument("owner", help="GitHub repository owner (e.g. 'octocat')")
