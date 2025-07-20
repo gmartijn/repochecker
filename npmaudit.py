@@ -3,142 +3,94 @@ import json
 import sys  
 import warnings  
 from datetime import datetime, timezone  
-  
-# Import timezone explicitly  
-# Suppress InsecureRequestWarning  
 from requests.packages.urllib3.exceptions import InsecureRequestWarning  
-warnings.simplefilter('ignore', InsecureRequestWarning)  
+import semver  
   
-# ┌─────────────────────────────────────────────────────────────────────────────┐  
-# │                          NPM Package Audit Script                           │  
-# │                                                                             │  
-# │  Note: This script evaluates NPM packages based on various criteria,        │  
-# │  including activity, license, and security policies.                        │  
-# │  However, please be aware that it does NOT factor in the reputation         │  
-# │  of the vendor or maintainer of the package. Use discretion when            │  
-# │  interpreting the results.                                                  │  
-# │                                                                             │  
-# │  Happy auditing!                                                            │  
-# └─────────────────────────────────────────────────────────────────────────────┘  
+warnings.simplefilter('ignore', InsecureRequestWarning)  
   
 def print_help():  
     help_message = """  
-    Usage: python npm_package_audit.py <package_name> [--checkdependencies] [--skipssl]  
+    Usage: python npm_package_audit.py <package_name> [--checkdependencies] [--skipssl] [--fail-below <score>]  
   
     This script audits an NPM package to evaluate its quality based on various criteria.  
       
-    Algorithm Overview:  
-    - The script checks the package's latest version, last published date, license type,   
-      and the number of active maintainers.  
-    - A trust score is calculated based on:  
-      1. The recency of the last published date (within the last 90 days).  
-      2. The number of active maintainers (at least 3 for a point).  
-      3. Whether the package has a license.  
-      4. The presence of maintainers.  
-    - The trust score is converted into a percentage and categorized into risk levels:  
-      - Very Low Risk: 80% and above  
-      - Low Risk: 60% to 79%  
-      - Medium Risk: 40% to 59%  
-      - High Risk: 20% to 39%  
-      - Critical Risk: Below 20%  
-  
-    Output:  
-    The output will show the following information for the audited package:  
-    - Package Name  
-    - Latest Version  
-    - Last Published Date  
-    - Number of Active Maintainers  
-    - License Type  
-    - Trust Score (as a percentage)  
-    - Risk Level (based on the trust score)  
-  
-    The results are also written to a file named 'npm_audit.json' in JSON format.  
-  
     Options:  
-    --checkdependencies:   
-    If this option is included, the script will also audit the dependencies listed in the   
-    package and provide a similar output for each of them.  
-  
-    --skipssl:  
-    If this option is included, the script will skip SSL certificate verification when   
-    making requests to the NPM registry. By default, SSL checking is enabled.  
-  
-    Example:  
-    To audit a package named 'example-package', skip SSL checks, and check its dependencies:  
-    python npm_package_audit.py example-package --skipssl --checkdependencies  
+    --checkdependencies: Audit dependencies individually.  
+    --skipssl: Skip SSL certificate verification.  
+    --fail-below <score>: Exit with status 1 if any package scores below the specified threshold.  
     """  
     print(help_message)  
   
-def get_npm_package_info(package_name, verify_ssl=True):  
+def get_npm_package_info(package_name, version=None, verify_ssl=True):  
     url = f"https://registry.npmjs.org/{package_name}"  
     try:  
-        r = requests.get(url, verify=verify_ssl)  # SSL verification controlled by the parameter  
+        r = requests.get(url, verify=verify_ssl)  
         r.raise_for_status()  
         data = r.json()  
-        latest_version = data["dist-tags"]["latest"]  
-        version_info = data["versions"][latest_version]  
+  
+        all_versions = list(data["versions"].keys())  
+        if version is None or version not in all_versions:  
+            version = data["dist-tags"]["latest"]  
+        version_info = data["versions"][version]  
   
         return {  
             "name": data["name"],  
-            "latest_version": latest_version,  
-            "last_published": data["time"][latest_version],  
+            "latest_version": version,  
+            "last_published": data["time"].get(version, "Unknown"),  
             "license": version_info.get("license", "None"),  
             "maintainers": [m["name"] for m in data.get("maintainers", [])],  
             "repository": version_info.get("repository", {}).get("url", ""),  
-            "dependencies": version_info.get("dependencies", {})  # Fetch dependencies  
+            "dependencies": version_info.get("dependencies", {}),  
+            "available_versions": all_versions  
         }  
     except Exception as e:  
-        print(f"Error retrieving NPM package info: {e}")  
+        print(f"Error retrieving NPM package info for {package_name}: {e}")  
         return None  
   
+def resolve_version(version_range, all_versions):  
+    try:  
+        valid_versions = [v for v in all_versions if not semver.VersionInfo.parse(v).prerelease]  
+        valid_versions.sort(key=lambda v: semver.VersionInfo.parse(v))  
+        for v in reversed(valid_versions):  
+            if semver.match(v, version_range):  
+                return v  
+    except Exception:  
+        pass  
+    return None  
+  
 def get_active_developers(package_info):  
-    return len(package_info["maintainers"])  # Count of maintainers as a proxy  
+    return len(package_info["maintainers"])  
   
 def score_package(last_published, num_devs, license_type):  
-    total_criteria = 4  # Adjusted total number of criteria for scoring  
+    total_criteria = 4  
     score = 0  
-  
-    # Recent publish  
-    if last_published:  
-        published = datetime.strptime(last_published, "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=timezone.utc)  
+    if last_published and last_published != "Unknown":  
+        try:  
+            published = datetime.strptime(last_published, "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=timezone.utc)  
+        except ValueError:  
+            published = datetime.strptime(last_published, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)  
         days_since_last = (datetime.now(timezone.utc) - published).days  
         if days_since_last < 90:  
-            score += 1  # 1 point for recent publish  
-  
-    # Active maintainers  
+            score += 1  
     if num_devs >= 3:  
-        score += 1  # 1 point for enough active maintainers  
-  
-    # License present  
+        score += 1  
     if license_type != "None":  
-        score += 1  # 1 point for having a license  
-  
-    # Check for issues (not applicable for NPM)  
+        score += 1  
     if num_devs > 0:  
-        score += 1  # 1 point if there are maintainers  
+        score += 1  
+    return (score / total_criteria) * 100  
   
-    # Calculate percentage score  
-    percentage_score = (score / total_criteria) * 100  
-    return percentage_score  
+def get_risk_level(score):  
+    if score >= 80: return "Very Low Risk"  
+    elif score >= 60: return "Low Risk"  
+    elif score >= 40: return "Medium Risk"  
+    elif score >= 20: return "High Risk"  
+    else: return "Critical Risk"  
   
-def get_risk_level(percentage_score):  
-    if percentage_score >= 80:  
-        return "Very Low Risk"  
-    elif percentage_score >= 60:  
-        return "Low Risk"  
-    elif percentage_score >= 40:  
-        return "Medium Risk"  
-    elif percentage_score >= 20:  
-        return "High Risk"  
-    else:  
-        return "Critical Risk"  
-  
-def audit_npm_package(package_name, verify_ssl=True):  
-    # Auditing package information  
-    package_info = get_npm_package_info(package_name, verify_ssl)  
+def audit_npm_package(package_name, verify_ssl=True, version=None):  
+    package_info = get_npm_package_info(package_name, version, verify_ssl)  
     if package_info is None:  
-        print("Failed to retrieve package information.")  
-        return None, None  # Return None for both values  
+        return None, None  
   
     num_devs = get_active_developers(package_info)  
     trust_score = score_package(package_info["last_published"], num_devs, package_info["license"])  
@@ -146,69 +98,83 @@ def audit_npm_package(package_name, verify_ssl=True):
   
     result = {  
         "package": package_info["name"],  
-        "latest_version": package_info["latest_version"],  
+        "version": package_info["latest_version"],  
         "last_published": package_info["last_published"],  
         "active_maintainers": num_devs,  
         "license": package_info["license"],  
-        "trust_score": trust_score,  # Now a percentage  
-        "risk_level": risk_level  # Add the qualitative risk level  
+        "trust_score": trust_score,  
+        "risk_level": risk_level  
     }  
   
-    return result, package_info.get("dependencies", {})  # Return both values  
+    return result, (package_info["dependencies"], package_info["available_versions"])  
   
-def audit_dependencies(dependencies, verify_ssl=True):  
-    dependency_results = {}  
-    for dep_name in dependencies.keys():  
-        dep_result, _ = audit_npm_package(dep_name, verify_ssl)  # Audit each dependency  
-        if dep_result:  
-            dependency_results[dep_name] = dep_result  
-    return dependency_results  
+def audit_dependencies(dependencies, verify_ssl=True, fail_threshold=None, failed_packages=None):  
+    results = {}  
+    for dep_name, version_range in dependencies.items():  
+        dep_info = get_npm_package_info(dep_name, verify_ssl=verify_ssl)  
+        if not dep_info:  
+            continue  
+        resolved_version = resolve_version(version_range, dep_info["available_versions"]) or dep_info["latest_version"]  
+        result, _ = audit_npm_package(dep_name, verify_ssl=verify_ssl, version=resolved_version)  
+        if result:  
+            results[dep_name] = result  
+            if fail_threshold is not None and result["trust_score"] < fail_threshold:  
+                print(f"❌ Dependency '{dep_name}' score {result['trust_score']} < threshold ({fail_threshold})")  
+                failed_packages.append(dep_name)  
+    return results  
   
-def main(package_name, check_dependencies, verify_ssl=True):  
-    # Display the disclaimer at the start of the audit  
-    print("\n⚠️  Disclaimer: This script evaluates NPM packages based on various criteria,")  
-    print("    including activity, license, and security policies.")  
-    print("    However, it does NOT factor in the reputation of the vendor or")  
-    print("    maintainer of the package. Use discretion when interpreting the results.\n")  
-      
-    package_result, dependencies = audit_npm_package(package_name, verify_ssl)  
+def main(package_name, check_dependencies, verify_ssl=True, fail_threshold=None):  
+    print("\n⚠️  Disclaimer: This script evaluates NPM packages based on activity, license, and maintainers. It does not verify vendor reputation.\n")  
   
-    if package_result is None:  # Check if package_result is None  
-        print("Auditing failed due to package retrieval issues.")  
-        return  
+    failed_packages = []  
   
-    # Prepare results for output  
-    output_results = {}  
+    main_result, (dependencies, _) = audit_npm_package(package_name, verify_ssl)  
+    if main_result is None:  
+        print("Package audit failed.")  
+        sys.exit(1)  
   
-    # Store main package result  
-    output_results["main_package"] = package_result  
+    if fail_threshold is not None and main_result["trust_score"] < fail_threshold:  
+        print(f"❌ Main package '{package_name}' score {main_result['trust_score']} < threshold ({fail_threshold})")  
+        failed_packages.append(package_name)  
+  
+    output = {"main_package": main_result}  
     print("\nMain Package Audit Result:")  
-    print(json.dumps(package_result, indent=4))  
+    print(json.dumps(main_result, indent=4))  
   
-    # Audit dependencies if requested  
     if check_dependencies and dependencies:  
-        dependency_results = audit_dependencies(dependencies, verify_ssl)  
-        output_results["dependencies"] = dependency_results  
+        dep_results = audit_dependencies(dependencies, verify_ssl, fail_threshold, failed_packages)  
+        output["dependencies"] = dep_results  
         print("\nDependencies Audit Results:")  
-        print(json.dumps(dependency_results, indent=4))  
+        print(json.dumps(dep_results, indent=4))  
   
-    # Write all results to npm_audit.json  
-    with open('npm_audit.json', 'w') as json_file:  
-        json.dump(output_results, json_file, indent=4)  
+    with open("npm_audit.json", "w") as f:  
+        json.dump(output, f, indent=4)  
         print("\nResults written to npm_audit.json")  
+  
+    if failed_packages:  
+        print("\n❌ The following packages failed the trust threshold:")  
+        for pkg in failed_packages:  
+            print(f"   - {pkg}")  
+        sys.exit(1)  
   
 if __name__ == "__main__":  
     if len(sys.argv) < 2:  
-        print("Usage: python npm_package_audit.py <package_name> [--checkdependencies] [--skipssl]")  
+        print("Usage: python npm_package_audit.py <package_name> [--checkdependencies] [--skipssl] [--fail-below <score>]")  
         print("Type --help for more information.")  
         sys.exit(1)  
   
-    if sys.argv[1] == "--help":  
+    if "--help" in sys.argv:  
         print_help()  
         sys.exit(0)  
   
-    package_name = sys.argv[1]  
-    check_dependencies = '--checkdependencies' in sys.argv  
-    verify_ssl = not ('--skipssl' in sys.argv)  
+    package = sys.argv[1]  
+    check_deps = "--checkdependencies" in sys.argv  
+    verify_ssl = not ("--skipssl" in sys.argv)  
   
-    main(package_name, check_dependencies, verify_ssl)  
+    try:  
+        fail_index = sys.argv.index("--fail-below")  
+        fail_threshold = float(sys.argv[fail_index + 1])  
+    except (ValueError, IndexError):  
+        fail_threshold = None  
+  
+    main(package, check_deps, verify_ssl, fail_threshold)

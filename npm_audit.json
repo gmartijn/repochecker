@@ -1,0 +1,58 @@
+{
+    "main_package": {
+        "package": "@pyroscope/nodejs",
+        "version": "0.4.5",
+        "last_published": "2025-03-24T12:55:39.921Z",
+        "active_maintainers": 2,
+        "license": "Apache-2.0",
+        "trust_score": 50.0,
+        "risk_level": "Medium Risk"
+    },
+    "dependencies": {
+        "@datadog/pprof": {
+            "package": "@datadog/pprof",
+            "version": "5.9.0",
+            "last_published": "2025-06-26T10:34:23.190Z",
+            "active_maintainers": 1,
+            "license": "Apache-2.0",
+            "trust_score": 75.0,
+            "risk_level": "Low Risk"
+        },
+        "debug": {
+            "package": "debug",
+            "version": "4.4.1",
+            "last_published": "2025-05-13T20:56:36.431Z",
+            "active_maintainers": 2,
+            "license": "MIT",
+            "trust_score": 75.0,
+            "risk_level": "Low Risk"
+        },
+        "p-limit": {
+            "package": "p-limit",
+            "version": "6.2.0",
+            "last_published": "2024-12-19T15:46:38.158Z",
+            "active_maintainers": 1,
+            "license": "MIT",
+            "trust_score": 50.0,
+            "risk_level": "Medium Risk"
+        },
+        "regenerator-runtime": {
+            "package": "regenerator-runtime",
+            "version": "0.14.1",
+            "last_published": "2023-12-15T20:52:02.938Z",
+            "active_maintainers": 1,
+            "license": "MIT",
+            "trust_score": 50.0,
+            "risk_level": "Medium Risk"
+        },
+        "source-map": {
+            "package": "source-map",
+            "version": "0.7.4",
+            "last_published": "2022-06-04T22:57:10.068Z",
+            "active_maintainers": 21,
+            "license": "BSD-3-Clause",
+            "trust_score": 75.0,
+            "risk_level": "Low Risk"
+        }
+    }
+}
