@@ -92,7 +92,7 @@ python dockeraudit.py bitnami/postgresql --score-details
 ---
 
 
-### 🔍 `npmudit.py`: Because Trusting Random NPM Packages Blindly Is So 2015
+### 🔍 `npmaudit.py`: Because Trusting Random NPM Packages Blindly Is So 2015
 
 Tired of installing NPM packages that haven’t been touched since Obama was president? Wondering if the three maintainers of your favorite package are actually just one guy named Dave with three email addresses? **Fear not.** `npm_package_audit.py` is here to slap your dependencies with some well-deserved scrutiny.
 
