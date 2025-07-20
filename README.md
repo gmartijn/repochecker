@@ -1,4 +1,4 @@
-# Repository Audit Scripts 🚀
+in# Repository Audit Scripts 🚀
 
 Welcome to **Repository Audit Scripts** – the Swiss Army knife for lazy (read: efficient) developers, DevOps gremlins, and security-conscious caffeine addicts. Why manually check things when a script can do it faster, better, and without having to read another 400-page compliance doc?
 
@@ -94,11 +94,7 @@ python dockeraudit.py <image_name> [--score-details] [--skipssl] [--json]
 
 ```bash
 python dockeraudit.py bitnami/postgresql --score-details
-```
-
-### `npmaudit.py` â€“ Defender of JavaScript Dependencies ðŸ›¡ï¸
-
-If your `node_modules` folder is older than some interns, you need this.
+`
 
 
 ---
