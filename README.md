@@ -94,7 +94,7 @@ python dockeraudit.py <image_name> [--score-details] [--skipssl] [--json]
 
 ```bash
 python dockeraudit.py bitnami/postgresql --score-details
-`
+```
 
 
 ---
