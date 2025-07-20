@@ -177,8 +177,14 @@ Feeling brave? Audit an NPM package in one line:
 ```bash
 python npmaudit.py express --checkdependencies
 ```
-
 This will judge `express` and all its dependencies. Side effects may include mild enlightenment or existential dread. Your call.
+
+### Quick Start for Docker Audit
+
+```bash
+python dockeraudit.py bitnami/postgresql --score-details
+```
+This will have a long hard stare at `bitnami\postgresql` and say "Go ahead punk, make my day!" 🤠
 
 ---
 
