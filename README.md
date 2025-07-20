@@ -209,7 +209,9 @@ Spotted a bug? Got a better idea? Feel the urge to automate one more thing so yo
 
 ## Final Words 🎸💻
 
-Skip the drama.Run the scripts.Audit like a rockstar.
+Skip the drama.
+Run the scripts.
+Audit like a rockstar. 👨‍🎤
 
 ```bash
 # And remember...
