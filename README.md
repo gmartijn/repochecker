@@ -91,47 +91,41 @@ python dockeraudit.py bitnami/postgresql --score-details
 
 ---
 
-### `npmaudit.py` – Defender of JavaScript Dependencies 🛡️
 
-If your `node_modules` folder is older than some interns, you need this.
+### 🔍 `npmudit.py`: Because Trusting Random NPM Packages Blindly Is So 2015
 
-- **📦 Dependency Archaeology:**  Flags ancient packages you forgot were even installed.
+Tired of installing NPM packages that haven’t been touched since Obama was president? Wondering if the three maintainers of your favorite package are actually just one guy named Dave with three email addresses? **Fear not.** `npm_package_audit.py` is here to slap your dependencies with some well-deserved scrutiny.
 
-- **🧺 Audit Score:**  Ranks your package hygiene. May sting a little, but it’s for your own good.
+#### What It Does
 
-- **📊 Trust Score + Risk Level:**  Calculates a trust score and tags the risk from “Very Low” to “Critical,” so you know whether to relax or run screaming.
+This script dives into the NPM registry, pokes around a package’s metadata, and comes back with a *Trust Score™* based on:
 
-- **🔍 Dependency Chain Judgment:**  Use `--checkdependencies` to recursively judge every dependency like a code therapist with abandonment issues.
+- 📆 When it was last published (i.e., is it still alive?)
+- 👥 Number of maintainers (more than one sock puppet account, preferably)
+- 📜 Whether it has a license (or if you're about to be sued)
+- 💡 Bonus points if it ticks multiple boxes
 
-- **📜 Output:**  All judgments are saved to `npm_audit.json`, in JSON format—perfect for spreadsheets, CI pipelines, or Slack-shaming your dev team.
+It also calculates a **Risk Level** ranging from "Very Low Risk" (nice!) to "Critical Risk" (run away).
 
-#### 🧪 Usage:
-
-```bash
-python npmaudit.py <package_name> [--checkdependencies] [--skipssl]
-```
-
-#### 🪰 Options:
-
-- `--checkdependencies`:  Enables recursive audits of all direct dependencies. It’s like dragging your whole family to therapy.
-
-- `--skipssl`:  Skips SSL certificate verification. Use only if your network’s weird, your proxy’s weirder, or you're feeling lucky.
-
-#### 🔎 Example:
+#### Usage
 
 ```bash
-python npmaudit.py express --checkdependencies --skipssl
+python npmaudit.py <package_name> [--checkdependencies] [--skipssl] [--fail-below <score>]
 ```
 
-#### 🗒 Output Includes:
+#### Options
 
-- Package Name
-- Latest Version
-- Last Published Date
-- Number of Active Maintainers
-- License Type
-- Trust Score (as a percentage)
-- Risk Level ("Very Low" to "Critical")
+| Flag | Description |
+|------|-------------|
+| `--checkdependencies` | Deep audits each dependency, because transitive shame is real. |
+| `--skipssl` | Skip SSL verification. Useful for debugging, less so for actual security. |
+| `--fail-below <score>` | Exit with a non-zero status if any package scores below your arbitrary threshold of paranoia. |
+
+#### Example
+
+```bash
+python npmaudit.py express --checkdependencies --fail-below 60
+```
 
 All of this gets lovingly written to `npm_audit.json`—so you can keep it, grep it, or set it on fire later.
 
