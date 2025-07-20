@@ -44,11 +44,62 @@ This script snoops through your GitHub repo like a nosy neighbor with an API key
 
 ### `dockeraudit.py` – Dockerfile Whisperer 🐳
 
-Does your Dockerfile scream “security disaster” or “clean deployment god”? This script doesn’t care—it's judging either way.
+Ever pulled a Docker image and thought, *â€œHmm, hope this wasnâ€™t uploaded by a sleep-deprived intern in 2016â€?* Now you donâ€™t have to guess.
 
-- **🔐 Security Red Flags:**  Scans for dangerous instructions that might get your container turned into a crypto mining botnet.
+#### ðŸ§  What It Actually Does:
 
-- **📟 Output Summary:**  Like a report card, but for infrastructure—and yes, it will point out your copy-paste sins.
+This script inspects Docker Hub metadata like it's evaluating your online dating profileâ€”fast, judgmental, and a little too honest.
+
+- **â­ Popularity Contest:**  Checks how many stars the image has and scores accordingly. No stars? No love.
+
+- **ðŸ“… Update Freshness:**  Calculates how stale the image is. If it hasnâ€™t been updated in 3 months, itâ€™s probably not bathing either.
+
+- **ðŸ“¦ Pull Count Flexing:**  Measures how many times the image has been pulled. The more, the better. Like social proof, but for containers.
+
+- **ðŸ·ï¸ Tag Count:**  More tags can mean better maintenanceâ€¦ or indecision. Either way, you get points.
+
+- **ðŸ¢ Org Activity Check:**  If the publisher is an active org on Docker Hub, you get bonus trust. Dormant ghost towns lose points.
+
+- **ðŸ™‹ User Type Scoring:**  Determines if the uploader is an individual or an organization. The latter scores higherâ€”sorry, lone wolves.
+
+- **âœ… Signed or Verified:**  If the image is signed or verified, thatâ€™s a green flag.
+
+- **ðŸ”– Official/Verified Publisher Badge:**  If it has a fancy badge, we give it a fancy score bump. Shiny things matter.
+
+#### ðŸ”¢ Output:
+
+- Calculates a **trust score** out of 100 based on all the above
+- Labels it with a **risk level**:
+  - `Very Low`
+  - `Low`
+  - `Medium`
+  - `High`
+  - `Critical` (â† ironically, the best score. Yeah, we may rename this.)
+
+- Dumps the full results into `docker_audit.json`, perfect for grepping, spreadsheets, or blaming in Slack.
+
+#### ðŸ›  Usage:
+
+```bash
+python dockeraudit.py <image_name> [--score-details] [--skipssl] [--json]
+```
+
+#### ðŸ§ª Options:
+
+- `--score-details`:  Includes a breakdown of exactly how the score was calculated. Great for bragging or debugging.
+- `--skipssl`:  Skips SSL verification (if your network or proxy is... quirky).
+- `--json`:  Outputs only to the JSON file, no terminal output.
+
+#### ðŸ“Ž Example:
+
+```bash
+python dockeraudit.py bitnami/postgresql --score-details
+```
+
+### `npmaudit.py` â€“ Defender of JavaScript Dependencies ðŸ›¡ï¸
+
+If your `node_modules` folder is older than some interns, you need this.
+
 
 ---
 
