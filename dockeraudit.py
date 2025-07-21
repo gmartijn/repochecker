@@ -2,9 +2,13 @@ import requests
 import json
 import sys
 import argparse
+import urllib3  
 from datetime import datetime, timezone
 
 DOCKER_HUB_API = "https://hub.docker.com/v2"
+
+# Suppress only the single InsecureRequestWarning from urllib3  
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)  
 
 # ┌─────────────────────────────────────────────────────────────────────────────┐  
 # │                        Docker Audit Script                                  │  
