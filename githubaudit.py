@@ -8,10 +8,11 @@ import urllib3
 from datetime import datetime, timedelta, timezone
 from requests.packages.urllib3.exceptions import InsecureRequestWarning
 
+
 # ┌─────────────────────────────────────────────────────────────────────────────┐  
 # │                        Github Audit Script                                  │  
 # │                                                                             │  
-# │  This script evaluates Github repositories based on various criteria,      │  
+# │  This script evaluates Github repositories based on various criteria,       │  
 # │  including activity, license, and security policies.                        │  
 # │  It also flags potentially abandoned repositories.                          │  
 # │                                                                             │  
@@ -57,15 +58,20 @@ def get_repo_info(owner, repo, verify_ssl):
         return {"name": f"{owner}/{repo}", "license": "Error", "language": "Unknown", "issue_tracking_enabled": False}
 
 def get_issues_count(owner, repo, verify_ssl):
-    url = f"https://api.github.com/search/issues?q=repo:{owner}/{repo}+type:issue"
+    base_url = f"https://api.github.com/search/issues?q=repo:{owner}/{repo}+type:issue"
+    counts = {"open": 0, "closed": 0}
+
     try:
-        r = requests.get(url, headers=HEADERS, verify=verify_ssl)
-        check_rate_limit(r)
-        if r.status_code == 200:
-            return r.json().get("total_count", 0)
+        for state in ["open", "closed"]:
+            url = f"{base_url}+state:{state}"
+            r = requests.get(url, headers=HEADERS, verify=verify_ssl)
+            check_rate_limit(r)
+            if r.status_code == 200:
+                counts[state] = r.json().get("total_count", 0)
     except Exception as e:
         print(f"⚠️ Error fetching issue count: {e}")
-    return 0
+
+    return counts
 
 def get_last_commit_date(owner, repo, verify_ssl):
     url = f"https://api.github.com/repos/{owner}/{repo}/commits"
@@ -115,26 +121,42 @@ def has_security_policy(owner, repo, verify_ssl):
             pass
     return False
 
-def count_signed_commits(owner, repo, verify_ssl, max_commits=100):
-    url = f"https://api.github.com/repos/{owner}/{repo}/commits?per_page={max_commits}"
-    try:
-        r = requests.get(url, headers=HEADERS, verify=verify_ssl)
-        check_rate_limit(r)
-        r.raise_for_status()
-        commits = r.json()
-        signed_count = 0
-        for commit in commits[:max_commits]:
-            verification = commit.get("commit", {}).get("verification", {})
-            if verification.get("verified"):
-                signed_count += 1
-        return signed_count, min(len(commits), max_commits)
-    except Exception as e:
-        print(f"⚠️ Error fetching signed commits: {e}")
-        return 0, 0
+def count_signed_commits(owner, repo, verify_ssl, max_commits=500):
+    per_page = 100
+    page = 1
+    signed_count = 0
+    total_checked = 0
+
+    while total_checked < max_commits:
+        url = f"https://api.github.com/repos/{owner}/{repo}/commits?per_page={per_page}&page={page}"
+        try:
+            r = requests.get(url, headers=HEADERS, verify=verify_ssl)
+            check_rate_limit(r)
+            r.raise_for_status()
+            commits = r.json()
+
+            if not commits:
+                break
+
+            for commit in commits:
+                if total_checked >= max_commits:
+                    break
+                verification = commit.get("commit", {}).get("verification", {})
+                if verification.get("verified"):
+                    signed_count += 1
+                total_checked += 1
+
+            page += 1
+
+        except Exception as e:
+            print(f"⚠️ Error fetching signed commits (page {page}): {e}")
+            break
+
+    return signed_count, total_checked
 
 def score_repo(last_commit_date, num_devs, license_type, has_policy, language,
-               has_open_or_closed_issues, issue_count, signed_commits=0, total_sampled=0):
-    total_criteria = 6
+               has_open_or_closed_issues, issue_counts, signed_commits=0, total_sampled=0):
+    total_criteria = 7
     score = 0
     is_abandoned = False
 
@@ -173,8 +195,13 @@ def score_repo(last_commit_date, num_devs, license_type, has_policy, language,
     if has_open_or_closed_issues:
         score += 1
 
-    if issue_count > 10:
-        score -= 1
+    issue_count_total = issue_counts["open"] + issue_counts["closed"]
+    if issue_count_total > 10:
+        closed_ratio = issue_counts["closed"] / issue_count_total
+        if closed_ratio >= 0.6:
+            score += 1
+        else:
+            score -= 1
 
     if total_sampled > 0:
         total_criteria += 1
@@ -196,20 +223,21 @@ def get_risk_level(score):
     else:
         return "Critical Risk"
 
-def audit_repository(owner, repo, verify_ssl, output_file="repo_audit.json"):
+def audit_repository(owner, repo, verify_ssl, output_file="repo_audit.json", max_commits=500):
     print(f"\n🔍 Auditing {owner}/{repo}...\n")
 
     repo_info = get_repo_info(owner, repo, verify_ssl)
-    issue_count = get_issues_count(owner, repo, verify_ssl)
+    issue_counts = get_issues_count(owner, repo, verify_ssl)
+    issue_count_total = issue_counts["open"] + issue_counts["closed"]
     last_commit = get_last_commit_date(owner, repo, verify_ssl)
     num_devs = get_active_developers(owner, repo, verify_ssl)
     policy = has_security_policy(owner, repo, verify_ssl)
-    has_open_or_closed_issues = issue_count > 0
-    signed_commits, total_sampled = count_signed_commits(owner, repo, verify_ssl)
+    has_open_or_closed_issues = issue_count_total > 0
+    signed_commits, total_sampled = count_signed_commits(owner, repo, verify_ssl, max_commits)
 
     trust_score, is_abandoned = score_repo(
         last_commit, num_devs, repo_info["license"], policy,
-        repo_info["language"], has_open_or_closed_issues, issue_count,
+        repo_info["language"], has_open_or_closed_issues, issue_counts,
         signed_commits, total_sampled
     )
 
@@ -228,7 +256,9 @@ def audit_repository(owner, repo, verify_ssl, output_file="repo_audit.json"):
         "language": repo_info["language"],
         "issue_tracking_enabled": repo_info["issue_tracking_enabled"],
         "has_open_or_closed_issues": has_open_or_closed_issues,
-        "issue_count": issue_count,
+        "issue_count_open": issue_counts["open"],
+        "issue_count_closed": issue_counts["closed"],
+        "issue_count_total": issue_count_total,
         "abandoned": is_abandoned,
         "signed_commits": signed_commits,
         "total_commits_sampled": total_sampled,
@@ -245,26 +275,14 @@ def audit_repository(owner, repo, verify_ssl, output_file="repo_audit.json"):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Audit a GitHub repository based on activity, license, developers, signed commits, and risk scoring.\n\n"
-                    "Scoring logic:\n"
-                    " - +1 if last commit was within 90 days\n"
-                    " - +1 if 5+ developers committed in last 90 days\n"
-                    " - +1 if license is MIT or Apache\n"
-                    " - +0.5 if license is GPL\n"
-                    " -  0 if license is MPL or LGPL\n"
-                    " - -1 if no license or unknown license\n"
-                    " - +1 if SECURITY.md is found\n"
-                    " - +1 if a modern language is used (Python, JS, etc)\n"
-                    " - +1 if any issues are present\n"
-                    " - -1 if issue count > 10\n"
-                    " - +1 if more than 50% of recent commits are signed\n"
-                    " - Flag 'abandoned' if no commit in 12+ months\n",
+        description="Audit a GitHub repository based on activity, license, developers, signed commits, and risk scoring.",
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument("owner", help="GitHub repository owner (e.g. 'octocat')")
     parser.add_argument("repo", help="GitHub repository name (e.g. 'Hello-World')")
     parser.add_argument("--skipssl", action="store_true", help="Skip SSL certificate verification")
     parser.add_argument("--output", default="repo_audit.json", help="Output file for audit results (default: repo_audit.json)")
+    parser.add_argument("--max-commits", type=int, default=500, help="Maximum number of commits to check for signing (default: 500)")
 
     args = parser.parse_args()
     verify_ssl = not args.skipssl
@@ -273,7 +291,7 @@ def main():
         from requests.packages.urllib3.exceptions import InsecureRequestWarning
         warnings.simplefilter('ignore', InsecureRequestWarning)
 
-    audit_repository(args.owner, args.repo, verify_ssl, output_file=args.output)
+    audit_repository(args.owner, args.repo, verify_ssl, output_file=args.output, max_commits=args.max_commits)
 
 if __name__ == "__main__":
     main()
