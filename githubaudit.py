@@ -115,12 +115,29 @@ def has_security_policy(owner, repo, verify_ssl):
             pass
     return False
 
-def score_repo(last_commit_date, num_devs, license_type, has_policy, language, has_open_or_closed_issues, issue_count):
+def count_signed_commits(owner, repo, verify_ssl, max_commits=100):
+    url = f"https://api.github.com/repos/{owner}/{repo}/commits?per_page={max_commits}"
+    try:
+        r = requests.get(url, headers=HEADERS, verify=verify_ssl)
+        check_rate_limit(r)
+        r.raise_for_status()
+        commits = r.json()
+        signed_count = 0
+        for commit in commits[:max_commits]:
+            verification = commit.get("commit", {}).get("verification", {})
+            if verification.get("verified"):
+                signed_count += 1
+        return signed_count, min(len(commits), max_commits)
+    except Exception as e:
+        print(f"⚠️ Error fetching signed commits: {e}")
+        return 0, 0
+
+def score_repo(last_commit_date, num_devs, license_type, has_policy, language,
+               has_open_or_closed_issues, issue_count, signed_commits=0, total_sampled=0):
     total_criteria = 6
     score = 0
     is_abandoned = False
 
-    # Recent commit
     if last_commit_date:
         last_commit = datetime.strptime(last_commit_date, "%Y-%m-%dT%H:%M:%SZ")
         days_since_commit = (datetime.now(timezone.utc) - last_commit.replace(tzinfo=timezone.utc)).days
@@ -131,11 +148,9 @@ def score_repo(last_commit_date, num_devs, license_type, has_policy, language, h
     else:
         is_abandoned = True
 
-    # Developer activity
     if num_devs >= 5:
         score += 1
 
-    # License scoring
     license_score = 0
     if license_type:
         normalized = license_type.lower()
@@ -149,21 +164,22 @@ def score_repo(last_commit_date, num_devs, license_type, has_policy, language, h
             license_score = -1
     score += license_score
 
-    # Security policy
     if has_policy:
         score += 1
 
-    # Language preference
     if language in ["Python", "JavaScript", "Go", "Rust", "Swift", "Kotlin", "Java", "C#"]:
         score += 1
 
-    # Issues present
     if has_open_or_closed_issues:
         score += 1
 
-    # Penalize too many issues
     if issue_count > 10:
         score -= 1
+
+    if total_sampled > 0:
+        total_criteria += 1
+        if signed_commits / total_sampled > 0.5:
+            score += 1
 
     final_score = max(0, (score / total_criteria) * 100)
     return final_score, is_abandoned
@@ -189,10 +205,12 @@ def audit_repository(owner, repo, verify_ssl, output_file="repo_audit.json"):
     num_devs = get_active_developers(owner, repo, verify_ssl)
     policy = has_security_policy(owner, repo, verify_ssl)
     has_open_or_closed_issues = issue_count > 0
+    signed_commits, total_sampled = count_signed_commits(owner, repo, verify_ssl)
 
     trust_score, is_abandoned = score_repo(
         last_commit, num_devs, repo_info["license"], policy,
-        repo_info["language"], has_open_or_closed_issues, issue_count
+        repo_info["language"], has_open_or_closed_issues, issue_count,
+        signed_commits, total_sampled
     )
 
     risk_level = get_risk_level(trust_score)
@@ -212,6 +230,9 @@ def audit_repository(owner, repo, verify_ssl, output_file="repo_audit.json"):
         "has_open_or_closed_issues": has_open_or_closed_issues,
         "issue_count": issue_count,
         "abandoned": is_abandoned,
+        "signed_commits": signed_commits,
+        "total_commits_sampled": total_sampled,
+        "signed_commit_percentage": round((signed_commits / total_sampled) * 100, 2) if total_sampled > 0 else None,
         "trust_score": trust_score,
         "risk_level": risk_level
     }
@@ -224,7 +245,7 @@ def audit_repository(owner, repo, verify_ssl, output_file="repo_audit.json"):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Audit a GitHub repository based on activity, license, developers, and risk scoring.\n\n"
+        description="Audit a GitHub repository based on activity, license, developers, signed commits, and risk scoring.\n\n"
                     "Scoring logic:\n"
                     " - +1 if last commit was within 90 days\n"
                     " - +1 if 5+ developers committed in last 90 days\n"
@@ -236,6 +257,7 @@ def main():
                     " - +1 if a modern language is used (Python, JS, etc)\n"
                     " - +1 if any issues are present\n"
                     " - -1 if issue count > 10\n"
+                    " - +1 if more than 50% of recent commits are signed\n"
                     " - Flag 'abandoned' if no commit in 12+ months\n",
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
