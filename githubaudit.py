@@ -4,6 +4,7 @@ import json
 import requests
 import argparse
 import warnings
+import urllib3
 from datetime import datetime, timedelta, timezone
 from requests.packages.urllib3.exceptions import InsecureRequestWarning
 
@@ -245,6 +246,10 @@ def main():
 
     args = parser.parse_args()
     verify_ssl = not args.skipssl
+
+    if args.skipssl:
+        from requests.packages.urllib3.exceptions import InsecureRequestWarning
+        warnings.simplefilter('ignore', InsecureRequestWarning)
 
     audit_repository(args.owner, args.repo, verify_ssl, output_file=args.output)
 
