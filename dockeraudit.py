@@ -7,8 +7,7 @@ from datetime import datetime, timezone
 
 DOCKER_HUB_API = "https://hub.docker.com/v2"
 
-# Suppress only the single InsecureRequestWarning from urllib3  
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)  
+
 
 # ┌─────────────────────────────────────────────────────────────────────────────┐  
 # │                        Docker Audit Script                                  │  
@@ -235,6 +234,11 @@ Example usage:
     parser.add_argument("--score-details", action="store_true", help="Include a breakdown of score components.")
 
     args = parser.parse_args()
+
+    
+   # Conditionally suppress SSL warnings  
+    if args.skipssl:  
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)  
     verify_ssl = not args.skipssl
 
     image_name = args.image_name
