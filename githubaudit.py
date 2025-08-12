@@ -7,19 +7,22 @@ import warnings
 from datetime import datetime, timedelta, timezone
 from requests.packages.urllib3.exceptions import InsecureRequestWarning
 
-# ┌─────────────────────────────────────────────────────────────────────────────┐  
-# │                        GitHub Audit Script                                  │  
-# │                                                                             │  
-# │  This script evaluates GitHub repositories based on various criteria,       │  
-# │  including activity, license, and security policies.                        │  
-# │  It also flags potentially abandoned repositories and provides a detailed   │  
-# │  breakdown outside of the JSON output.                                      │  
-# │                                                                             │  
-# │  Note: This does not fully account for vendor/maintainer reputation.        │  
-# │  Use judgment when interpreting results.                                    │  
-# │                                                                             │  
-# │  Happy auditing!                                                            │  
-# └─────────────────────────────────────────────────────────────────────────────┘  
+# ┌─────────────────────────────────────────────────────────────────────────────┐
+# │                        GitHub Audit Script                                  │
+# │                                                                             │
+# │  This script evaluates GitHub repositories based on various criteria,       │
+# │  including activity, license, and security policies.                        │
+# │  It also flags potentially abandoned repositories and provides a detailed   │
+# │  breakdown outside of the JSON output.                                      │
+# │                                                                             │
+# │  New: --fail-below <N> will exit with a non-zero status if the computed     │
+# │  trust score is below N (useful for CI gates).                              │
+# │                                                                             │
+# │  Note: This does not fully account for vendor/maintainer reputation.        │
+# │  Use judgment when interpreting results.                                    │
+# │                                                                             │
+# │  Happy auditing!                                                            │
+# └─────────────────────────────────────────────────────────────────────────────┘
 
 # Suppress insecure SSL warnings if skipping verification
 warnings.simplefilter('ignore', InsecureRequestWarning)
@@ -40,9 +43,9 @@ def check_rate_limit(response):
         print(f"❗ GitHub API rate limit reached. Try again after {reset_time}.")
         sys.exit(1)
 
+
 # Fetch repository metadata
 # Guard against missing license object
-
 def get_repo_info(owner, repo, verify_ssl):
     url = f"https://api.github.com/repos/{owner}/{repo}"
     try:
@@ -62,6 +65,7 @@ def get_repo_info(owner, repo, verify_ssl):
         print(f"⚠️ Error fetching repo info: {e}")
         return {"name": f"{owner}/{repo}", "license": "Error", "language": "Unknown", "issue_tracking_enabled": False}
 
+
 # Count open and closed issues via Search API
 def get_issues_count(owner, repo, verify_ssl):
     counts = {"open": 0, "closed": 0}
@@ -77,6 +81,7 @@ def get_issues_count(owner, repo, verify_ssl):
             print(f"⚠️ Error fetching {state} issues: {e}")
     return counts
 
+
 # Get date of most recent commit
 def get_last_commit_date(owner, repo, verify_ssl):
     url = f"https://api.github.com/repos/{owner}/{repo}/commits"
@@ -90,6 +95,7 @@ def get_last_commit_date(owner, repo, verify_ssl):
     except Exception as e:
         print(f"⚠️ Error fetching commits: {e}")
     return None
+
 
 # Count unique authors in last N days
 def get_active_developers(owner, repo, verify_ssl, days=90):
@@ -115,6 +121,7 @@ def get_active_developers(owner, repo, verify_ssl, days=90):
             break
     return len(devs)
 
+
 # Check for a SECURITY.md file
 def has_security_policy(owner, repo, verify_ssl):
     paths = ['.github/SECURITY.md', 'SECURITY.md', 'docs/SECURITY.md']
@@ -128,6 +135,7 @@ def has_security_policy(owner, repo, verify_ssl):
         except:
             continue
     return False
+
 
 # Sample commits to count GPG-signed ones
 def count_signed_commits(owner, repo, verify_ssl, max_commits=500):
@@ -154,6 +162,7 @@ def count_signed_commits(owner, repo, verify_ssl, max_commits=500):
             print(f"⚠️ Error fetching signed commits (page {page}): {e}")
             break
     return signed, total
+
 
 # Scoring logic with external breakdown
 def score_repo(last_commit_date, num_devs, license_type, has_policy,
@@ -208,7 +217,7 @@ def score_repo(last_commit_date, num_devs, license_type, has_policy,
     breakdown['security_policy'] = {'score': 1 if has_policy else 0, 'value': has_policy}
 
     # 5) Language
-    popular = ["Python","JavaScript","Go","Rust","Swift","Kotlin","Java","C#"]
+    popular = ["Python", "JavaScript", "Go", "Rust", "Swift", "Kotlin", "Java", "C#"]
     lang_ok = language in popular
     if lang_ok:
         raw_score += 1
@@ -239,12 +248,13 @@ def score_repo(last_commit_date, num_devs, license_type, has_policy,
         if sign_ok:
             raw_score += 1
         breakdown['signed_commits'] = {'score': 1 if sign_ok else 0,
-                                      'value': ratio,
-                                      'threshold': 0.5}
+                                       'value': ratio,
+                                       'threshold': 0.5}
 
     # Normalize to 0–100
     final = max(0, (raw_score / total_criteria) * 100)
     return final, abandoned, breakdown
+
 
 # Map numeric score to risk level
 def get_risk_level(score):
@@ -258,8 +268,9 @@ def get_risk_level(score):
         return "High Risk"
     return "Critical Risk"
 
+
 # Main audit function
-def audit_repository(owner, repo, verify_ssl, output_file="repo_audit.json", max_commits=500):
+def audit_repository(owner, repo, verify_ssl, output_file="repo_audit.json", max_commits=500, fail_below=None):
     print(f"🔍 Auditing {owner}/{repo}...")
 
     info = get_repo_info(owner, repo, verify_ssl)
@@ -307,6 +318,7 @@ def audit_repository(owner, repo, verify_ssl, output_file="repo_audit.json", max
         "trust_score": score,
         "risk_level": risk
     }
+
     # Write JSON
     print(json.dumps(result, indent=4))
     with open(output_file, 'w') as f:
@@ -318,6 +330,24 @@ def audit_repository(owner, repo, verify_ssl, output_file="repo_audit.json", max
     for crit, det in breakdown.items():
         thresholds = det.get('threshold') or det.get('thresholds') or det.get('rules')
         print(f"- {crit}: score {det['score']:+} | value: {det['value']} | thresholds/rules: {thresholds}")
+
+    # Fail-below logic
+    if fail_below is not None:
+        try:
+            threshold = float(fail_below)
+        except ValueError:
+            print(f"❌ Invalid --fail-below value: {fail_below}. Expected a number.")
+            sys.exit(2)
+
+        if threshold < 0 or threshold > 100:
+            print(f"⚠️ --fail-below value {threshold} is outside 0–100. Proceeding anyway.")
+
+        if score < threshold:
+            print(f"❌ Trust score {score:.2f} is below threshold {threshold}. Exiting with failure.")
+            sys.exit(1)
+        else:
+            print(f"✅ Trust score {score:.2f} meets threshold {threshold}.")
+
 
 # CLI entrypoint
 def main():
@@ -332,11 +362,17 @@ def main():
                         help="Output file for audit results (default: repo_audit.json)")
     parser.add_argument("--max-commits", type=int, default=500,
                         help="Maximum commits to check for signing (default: 500)")
+    parser.add_argument("--fail-below", type=float,
+                        help="Exit with non-zero status if trust score is below this value (0–100)")
     args = parser.parse_args()
     verify = not args.skipssl
     if args.skipssl:
         warnings.simplefilter('ignore', InsecureRequestWarning)
-    audit_repository(args.owner, args.repo, verify, output_file=args.output, max_commits=args.max_commits)
+    audit_repository(args.owner, args.repo, verify,
+                     output_file=args.output,
+                     max_commits=args.max_commits,
+                     fail_below=args.fail_below)
+
 
 if __name__ == '__main__':
     main()
