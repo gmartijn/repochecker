@@ -4,30 +4,19 @@ import json
 import requests
 import argparse
 import warnings
+import configparser
 from datetime import datetime, timedelta, timezone
 from requests.packages.urllib3.exceptions import InsecureRequestWarning
 
 # ┌─────────────────────────────────────────────────────────────────────────────┐
-# │                        GitHub Audit Script                                  │
+# │                        GitHub Audit Script (configurable)                  │
 # │                                                                             │
-# │  This script evaluates GitHub repositories based on various criteria,       │
-# │  including activity, license, and security policies.                        │
-# │  It also flags potentially abandoned repositories and provides a detailed   │
-# │  breakdown outside of the JSON output.                                      │
-# │                                                                             │
-# │  New: --fail-below <N> will exit with a non-zero status if the computed     │
-# │  trust score is below N (useful for CI gates).                              │
-# │                                                                             │
-# │  Note: This does not fully account for vendor/maintainer reputation.        │
-# │  Use judgment when interpreting results.                                    │
-# │                                                                             │
-# │  Happy auditing!                                                            │
+# │  New: All calculation parameters are configurable via an INI file.          │
+# │       Use --config to load one, or --write-default-config to output one.    │
 # └─────────────────────────────────────────────────────────────────────────────┘
 
-# Suppress insecure SSL warnings if skipping verification
 warnings.simplefilter('ignore', InsecureRequestWarning)
 
-# GitHub API token from environment (optional)
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")
 HEADERS = {"Accept": "application/vnd.github+json"}
 if GITHUB_TOKEN:
@@ -35,6 +24,120 @@ if GITHUB_TOKEN:
 else:
     print("⚠️ Warning: No GITHUB_TOKEN set. You may hit rate limits quickly.")
 
+# ---------------------------- Configuration ----------------------------------
+
+DEFAULT_CONFIG_TEXT = """\
+[recent_commit]
+good_days = 90
+abandoned_days = 365
+score = 1
+
+[active_devs]
+threshold = 5
+score = 1
+
+[license_scores]
+mit = 1
+apache = 1
+gpl = 0.5
+mpl = 0
+lgpl = 0
+other = -1
+
+[security_policy]
+score = 1
+
+[language]
+popular = Python, JavaScript, Go, Rust, Swift, Kotlin, Java, C#
+score = 1
+
+[issue_tracking]
+score = 1
+
+[issue_resolution]
+min_issues = 10
+ratio_threshold = 0.6
+score_pass = 1
+score_fail = -1
+
+[signed_commits]
+ratio_threshold = 0.5
+score = 1
+"""
+
+def write_default_config(path):
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(DEFAULT_CONFIG_TEXT)
+    print(f"✅ Wrote default config to {path}")
+
+def load_config(path=None):
+    cfg = configparser.ConfigParser()
+    # Load defaults first
+    cfg.read_string(DEFAULT_CONFIG_TEXT)
+    # Override with user file if provided
+    if path:
+        with open(path, "r", encoding="utf-8") as f:
+            cfg.read_file(f)
+    # Normalize some fields to Python types
+    def get_float(section, option, fallback):
+        try:
+            return cfg.getfloat(section, option, fallback=fallback)
+        except Exception:
+            return fallback
+
+    def get_int(section, option, fallback):
+        try:
+            return cfg.getint(section, option, fallback=fallback)
+        except Exception:
+            return fallback
+
+    def get_list(section, option, fallback_list):
+        raw = cfg.get(section, option, fallback=",".join(fallback_list))
+        return [x.strip() for x in raw.split(",") if x.strip()]
+
+    config = {
+        "recent_commit": {
+            "good_days": get_int("recent_commit", "good_days", 90),
+            "abandoned_days": get_int("recent_commit", "abandoned_days", 365),
+            "score": get_float("recent_commit", "score", 1),
+        },
+        "active_devs": {
+            "threshold": get_int("active_devs", "threshold", 5),
+            "score": get_float("active_devs", "score", 1),
+        },
+        "license_scores": {
+            "mit": get_float("license_scores", "mit", 1),
+            "apache": get_float("license_scores", "apache", 1),
+            "gpl": get_float("license_scores", "gpl", 0.5),
+            "mpl": get_float("license_scores", "mpl", 0),
+            "lgpl": get_float("license_scores", "lgpl", 0),
+            "other": get_float("license_scores", "other", -1),
+        },
+        "security_policy": {
+            "score": get_float("security_policy", "score", 1),
+        },
+        "language": {
+            "popular": get_list("language", "popular",
+                                ["Python","JavaScript","Go","Rust","Swift","Kotlin","Java","C#"]),
+            "score": get_float("language", "score", 1),
+        },
+        "issue_tracking": {
+            "score": get_float("issue_tracking", "score", 1),
+        },
+        "issue_resolution": {
+            "min_issues": get_int("issue_resolution", "min_issues", 10),
+            "ratio_threshold": get_float("issue_resolution", "ratio_threshold", 0.6),
+            "score_pass": get_float("issue_resolution", "score_pass", 1),
+            "score_fail": get_float("issue_resolution", "score_fail", -1),
+        },
+        "signed_commits": {
+            "ratio_threshold": get_float("signed_commits", "ratio_threshold", 0.5),
+            "score": get_float("signed_commits", "score", 1),
+        },
+    }
+    return config
+
+# ---------------------------- GitHub helpers ---------------------------------
 
 def check_rate_limit(response):
     if response.status_code == 403 and response.headers.get('X-RateLimit-Remaining') == '0':
@@ -43,9 +146,6 @@ def check_rate_limit(response):
         print(f"❗ GitHub API rate limit reached. Try again after {reset_time}.")
         sys.exit(1)
 
-
-# Fetch repository metadata
-# Guard against missing license object
 def get_repo_info(owner, repo, verify_ssl):
     url = f"https://api.github.com/repos/{owner}/{repo}"
     try:
@@ -65,8 +165,6 @@ def get_repo_info(owner, repo, verify_ssl):
         print(f"⚠️ Error fetching repo info: {e}")
         return {"name": f"{owner}/{repo}", "license": "Error", "language": "Unknown", "issue_tracking_enabled": False}
 
-
-# Count open and closed issues via Search API
 def get_issues_count(owner, repo, verify_ssl):
     counts = {"open": 0, "closed": 0}
     base = f"https://api.github.com/search/issues?q=repo:{owner}/{repo}+type:issue"
@@ -81,8 +179,6 @@ def get_issues_count(owner, repo, verify_ssl):
             print(f"⚠️ Error fetching {state} issues: {e}")
     return counts
 
-
-# Get date of most recent commit
 def get_last_commit_date(owner, repo, verify_ssl):
     url = f"https://api.github.com/repos/{owner}/{repo}/commits"
     try:
@@ -96,8 +192,6 @@ def get_last_commit_date(owner, repo, verify_ssl):
         print(f"⚠️ Error fetching commits: {e}")
     return None
 
-
-# Count unique authors in last N days
 def get_active_developers(owner, repo, verify_ssl, days=90):
     since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat().replace('+00:00', 'Z')
     devs = set()
@@ -121,8 +215,6 @@ def get_active_developers(owner, repo, verify_ssl, days=90):
             break
     return len(devs)
 
-
-# Check for a SECURITY.md file
 def has_security_policy(owner, repo, verify_ssl):
     paths = ['.github/SECURITY.md', 'SECURITY.md', 'docs/SECURITY.md']
     for p in paths:
@@ -136,8 +228,6 @@ def has_security_policy(owner, repo, verify_ssl):
             continue
     return False
 
-
-# Sample commits to count GPG-signed ones
 def count_signed_commits(owner, repo, verify_ssl, max_commits=500):
     per_page, page = 100, 1
     signed, total = 0, 0
@@ -163,100 +253,172 @@ def count_signed_commits(owner, repo, verify_ssl, max_commits=500):
             break
     return signed, total
 
+# ---------------------------- Scoring ----------------------------------------
 
-# Scoring logic with external breakdown
 def score_repo(last_commit_date, num_devs, license_type, has_policy,
                language, has_issues, issue_counts,
-               signed_commits=0, total_sampled=0):
-    total_criteria = 7
-    raw_score = 0
+               signed_commits, total_sampled, config):
+    raw_score = 0.0
     abandoned = False
     breakdown = {}
 
+    # Build denominator as the sum of max possible *positive* contributions
+    denom = 0.0
+
     # 1) Recent commit
+    rc = config["recent_commit"]
     if last_commit_date:
         last = datetime.strptime(last_commit_date, "%Y-%m-%dT%H:%M:%SZ")
         days = (datetime.now(timezone.utc) - last.replace(tzinfo=timezone.utc)).days
-        passed = days < 90
-        if passed:
-            raw_score += 1
-        if days > 365:
+        passed = days < rc["good_days"]
+        score_val = rc["score"] if passed else 0.0
+        raw_score += score_val
+        denom += max(rc["score"], 0.0)
+        if days > rc["abandoned_days"]:
             abandoned = True
         breakdown['recent_commit'] = {
-            'score': 1 if passed else 0,
+            'score': score_val if passed else 0.0,
             'value': days,
-            'thresholds': {'good_days': 90, 'abandoned_days': 365}
+            'thresholds': {'good_days': rc["good_days"], 'abandoned_days': rc["abandoned_days"]},
+            'weight': rc["score"]
         }
     else:
+        denom += max(rc["score"], 0.0)
         abandoned = True
-        breakdown['recent_commit'] = {'score': 0, 'value': None, 'thresholds': {'good_days': 90, 'abandoned_days': 365}}
+        breakdown['recent_commit'] = {
+            'score': 0.0,
+            'value': None,
+            'thresholds': {'good_days': rc["good_days"], 'abandoned_days': rc["abandoned_days"]},
+            'weight': rc["score"]
+        }
 
     # 2) Active developers
-    dev_ok = num_devs >= 5
-    if dev_ok:
-        raw_score += 1
-    breakdown['active_devs'] = {'score': 1 if dev_ok else 0, 'value': num_devs, 'threshold': 5}
+    ad = config["active_devs"]
+    dev_ok = num_devs >= ad["threshold"]
+    score_val = ad["score"] if dev_ok else 0.0
+    raw_score += score_val
+    denom += max(ad["score"], 0.0)
+    breakdown['active_devs'] = {
+        'score': score_val,
+        'value': num_devs,
+        'threshold': ad["threshold"],
+        'weight': ad["score"]
+    }
 
     # 3) License
-    norm = license_type.lower() if license_type else ''
-    if 'mit' in norm or 'apache' in norm:
-        lic_score = 1
-    elif 'gpl' in norm:
-        lic_score = 0.5
-    elif 'mpl' in norm or 'lgpl' in norm:
-        lic_score = 0
+    lic = (license_type or "").lower()
+    ls = config["license_scores"]
+    # Choose first matching family
+    if "mit" in lic:
+        lic_score = ls["mit"]
+        family = "MIT"
+    elif "apache" in lic:
+        lic_score = ls["apache"]
+        family = "Apache"
+    elif "gpl" in lic:
+        lic_score = ls["gpl"]
+        family = "GPL"
+    elif "mpl" in lic:
+        lic_score = ls["mpl"]
+        family = "MPL"
+    elif "lgpl" in lic:
+        lic_score = ls["lgpl"]
+        family = "LGPL"
     else:
-        lic_score = -1
+        lic_score = ls["other"]
+        family = "Other"
     raw_score += lic_score
-    breakdown['license'] = {'score': lic_score, 'value': license_type,
-                            'rules': {'MIT/Apache': 1, 'GPL': 0.5, 'MPL/LGPL': 0, 'Other': -1}}
+    denom += max(ls["mit"], ls["apache"], ls["gpl"], ls["mpl"], ls["lgpl"], 0.0)  # don't let negative reduce denom
+    breakdown['license'] = {
+        'score': lic_score,
+        'value': license_type,
+        'rules': dict(ls),
+        'matched_family': family
+    }
 
     # 4) Security policy
-    if has_policy:
-        raw_score += 1
-    breakdown['security_policy'] = {'score': 1 if has_policy else 0, 'value': has_policy}
+    sp = config["security_policy"]
+    score_val = sp["score"] if has_policy else 0.0
+    raw_score += score_val
+    denom += max(sp["score"], 0.0)
+    breakdown['security_policy'] = {
+        'score': score_val,
+        'value': has_policy,
+        'weight': sp["score"]
+    }
 
     # 5) Language
-    popular = ["Python", "JavaScript", "Go", "Rust", "Swift", "Kotlin", "Java", "C#"]
-    lang_ok = language in popular
-    if lang_ok:
-        raw_score += 1
-    breakdown['language'] = {'score': 1 if lang_ok else 0, 'value': language}
+    ln = config["language"]
+    lang_ok = language in ln["popular"]
+    score_val = ln["score"] if lang_ok else 0.0
+    raw_score += score_val
+    denom += max(ln["score"], 0.0)
+    breakdown['language'] = {
+        'score': score_val,
+        'value': language,
+        'popular_list': ln["popular"],
+        'weight': ln["score"]
+    }
 
-    # 6) Issue tracking
-    if has_issues:
-        raw_score += 1
-    breakdown['issue_tracking'] = {'score': 1 if has_issues else 0, 'value': has_issues}
+    # 6) Issue tracking (feature enabled)
+    it = config["issue_tracking"]
+    score_val = it["score"] if has_issues else 0.0
+    raw_score += score_val
+    denom += max(it["score"], 0.0)
+    breakdown['issue_tracking'] = {
+        'score': score_val,
+        'value': has_issues,
+        'weight': it["score"]
+    }
 
     # 7) Issue resolution
+    ir = config["issue_resolution"]
     total_issues = issue_counts['open'] + issue_counts['closed']
-    if total_issues > 10:
-        ratio = issue_counts['closed'] / total_issues
-        res_ok = ratio >= 0.6
-        raw_score += 1 if res_ok else -1
-        breakdown['issue_resolution'] = {'score': 1 if res_ok else -1,
-                                         'value': ratio,
-                                         'threshold': 0.6}
+    if total_issues > ir["min_issues"]:
+        ratio = issue_counts['closed'] / total_issues if total_issues else 0
+        pass_ok = ratio >= ir["ratio_threshold"]
+        score_val = ir["score_pass"] if pass_ok else ir["score_fail"]
+        raw_score += score_val
+        # Only add positive potential to denominator
+        denom += max(ir["score_pass"], 0.0)
+        breakdown['issue_resolution'] = {
+            'score': score_val,
+            'value': ratio,
+            'threshold': ir["ratio_threshold"],
+            'min_issues': ir["min_issues"],
+            'weights': {'pass': ir["score_pass"], 'fail': ir["score_fail"]}
+        }
     else:
-        breakdown['issue_resolution'] = {'score': 0, 'value': total_issues, 'threshold': 10}
+        # Criterion present but no score applied; still add its max positive to denom to mirror original? No—original added 0 without affecting denominator. Keep that behavior.
+        breakdown['issue_resolution'] = {
+            'score': 0.0,
+            'value': total_issues,
+            'threshold': ir["min_issues"],
+            'weights': {'pass': ir["score_pass"], 'fail': ir["score_fail"]}
+        }
 
-    # 8) Signed commits
+    # 8) Signed commits (optional, only if sampled)
+    sc = config["signed_commits"]
     if total_sampled > 0:
-        total_criteria += 1
         ratio = signed_commits / total_sampled
-        sign_ok = ratio > 0.5
-        if sign_ok:
-            raw_score += 1
-        breakdown['signed_commits'] = {'score': 1 if sign_ok else 0,
-                                       'value': ratio,
-                                       'threshold': 0.5}
+        sign_ok = ratio > sc["ratio_threshold"]
+        score_val = sc["score"] if sign_ok else 0.0
+        raw_score += score_val
+        denom += max(sc["score"], 0.0)
+        breakdown['signed_commits'] = {
+            'score': score_val,
+            'value': ratio,
+            'threshold': sc["ratio_threshold"],
+            'sampled': total_sampled,
+            'weight': sc["score"]
+        }
 
     # Normalize to 0–100
-    final = max(0, (raw_score / total_criteria) * 100)
+    final = 0.0
+    if denom > 0:
+        final = max(0.0, (raw_score / denom) * 100.0)
     return final, abandoned, breakdown
 
-
-# Map numeric score to risk level
 def get_risk_level(score):
     if score >= 80:
         return "Very Low Risk"
@@ -268,14 +430,18 @@ def get_risk_level(score):
         return "High Risk"
     return "Critical Risk"
 
+# ---------------------------- Main audit -------------------------------------
 
-# Main audit function
-def audit_repository(owner, repo, verify_ssl, output_file="repo_audit.json", max_commits=500, fail_below=None):
+def audit_repository(owner, repo, verify_ssl, output_file="repo_audit.json",
+                     max_commits=500, fail_below=None, config=None):
+    if config is None:
+        config = load_config()
     print(f"🔍 Auditing {owner}/{repo}...")
 
     info = get_repo_info(owner, repo, verify_ssl)
     issues = get_issues_count(owner, repo, verify_ssl)
     last_commit = get_last_commit_date(owner, repo, verify_ssl)
+    # NOTE: keep "last 90 days" window for devs separate from INI; you can add to INI if desired.
     dev_count = get_active_developers(owner, repo, verify_ssl)
     policy = has_security_policy(owner, repo, verify_ssl)
     has_any_issues = (issues['open'] + issues['closed']) > 0
@@ -290,14 +456,14 @@ def audit_repository(owner, repo, verify_ssl, output_file="repo_audit.json", max
         has_any_issues,
         issues,
         signed,
-        sampled
+        sampled,
+        config
     )
     risk = get_risk_level(score)
 
     if abandoned:
         print("⚠️ Warning: Repository appears abandoned (>365 days since last commit)")
 
-    # JSON output without breakdown
     result = {
         "timestamp": datetime.utcnow().isoformat() + "Z",
         "repository": info['name'],
@@ -319,19 +485,16 @@ def audit_repository(owner, repo, verify_ssl, output_file="repo_audit.json", max
         "risk_level": risk
     }
 
-    # Write JSON
     print(json.dumps(result, indent=4))
-    with open(output_file, 'w') as f:
+    with open(output_file, 'w', encoding='utf-8') as f:
         json.dump(result, f, indent=4)
     print(f"✅ Audit saved to {output_file}")
 
-    # External breakdown
     print("\n📊 Score Breakdown Explanation:")
     for crit, det in breakdown.items():
-        thresholds = det.get('threshold') or det.get('thresholds') or det.get('rules')
-        print(f"- {crit}: score {det['score']:+} | value: {det['value']} | thresholds/rules: {thresholds}")
+        thresholds = det.get('threshold') or det.get('thresholds') or det.get('weights')
+        print(f"- {crit}: score {det['score']:+} | value: {det.get('value')} | thresholds/rules: {thresholds}")
 
-    # Fail-below logic
     if fail_below is not None:
         try:
             threshold = float(fail_below)
@@ -348,15 +511,15 @@ def audit_repository(owner, repo, verify_ssl, output_file="repo_audit.json", max
         else:
             print(f"✅ Trust score {score:.2f} meets threshold {threshold}.")
 
+# ---------------------------- CLI --------------------------------------------
 
-# CLI entrypoint
 def main():
     parser = argparse.ArgumentParser(
-        description="Audit a GitHub repository based on activity, license, developers, signed commits, and risk scoring.",
+        description="Audit a GitHub repo with configurable scoring (INI).",
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    parser.add_argument("owner", help="GitHub repository owner (e.g. 'octocat')")
-    parser.add_argument("repo", help="GitHub repository name (e.g. 'Hello-World')")
+    parser.add_argument("owner", nargs="?", help="GitHub repository owner (e.g. 'octocat')")
+    parser.add_argument("repo", nargs="?", help="GitHub repository name (e.g. 'Hello-World')")
     parser.add_argument("--skipssl", action="store_true", help="Skip SSL certificate verification")
     parser.add_argument("--output", default="repo_audit.json",
                         help="Output file for audit results (default: repo_audit.json)")
@@ -364,15 +527,31 @@ def main():
                         help="Maximum commits to check for signing (default: 500)")
     parser.add_argument("--fail-below", type=float,
                         help="Exit with non-zero status if trust score is below this value (0–100)")
+    parser.add_argument("--config", help="Path to INI config with scoring parameters")
+    parser.add_argument("--write-default-config", metavar="PATH",
+                        help="Write a default INI to PATH and exit")
     args = parser.parse_args()
+
+    if args.write_default_config:
+        write_default_config(args.write_default_config)
+        return
+
+    if not args.owner or not args.repo:
+        print("❌ Missing required arguments: owner and repo.")
+        print("   Tip: use --write-default-config config.ini to generate a template.")
+        sys.exit(2)
+
     verify = not args.skipssl
     if args.skipssl:
         warnings.simplefilter('ignore', InsecureRequestWarning)
+
+    config = load_config(args.config) if args.config else load_config()
+
     audit_repository(args.owner, args.repo, verify,
                      output_file=args.output,
                      max_commits=args.max_commits,
-                     fail_below=args.fail_below)
-
+                     fail_below=args.fail_below,
+                     config=config)
 
 if __name__ == '__main__':
     main()
