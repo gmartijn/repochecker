@@ -34,17 +34,12 @@ This script snoops through your GitHub repo like a nosy neighbor with an API key
 - **📝 Configurable Scoring (NEW):** All thresholds, weights, popular language list, and license scoring are configurable via **INI**.
 - **🧪 CI-friendly:** `--fail-below` exits non-zero if the score doesn’t meet your bar.
 - **📦 Output:** Saves everything to `repo_audit.json`.
+- **🔑 Prefers a GitHub token:** Yes, it *works* without one, but the unauthenticated rate limit is basically training wheels. Enjoy 403s, or set a token like a responsible adult. 😇
 
 #### 🧪 Usage
 
 ```bash
-python githubaudit.py <owner> <repo> \
-  [--skipssl] \
-  [--output <file>] \
-  [--max-commits N] \
-  [--fail-below SCORE] \
-  [--config path/to/config.ini] \
-  [--write-default-config path/to/new.ini]
+python githubaudit.py <owner> <repo>   [--skipssl]   [--output <file>]   [--max-commits N]   [--fail-below SCORE]   [--config path/to/config.ini]   [--write-default-config path/to/new.ini]
 ```
 
 #### 🛠️ Options
@@ -126,13 +121,38 @@ score = 1
 
 > ℹ️ **Scoring math:** The final score is normalized to 0–100 by dividing by the sum of the **max positive points available** for criteria that apply (e.g., signed-commit points only count in the denominator if commits were sampled).
 
-#### 🔑 Pro tip: API token
+#### 🔥 Strongly recommended: set a GitHub token (unless you enjoy 403s)
 
-Set a GitHub token to avoid rate limits:
+Running unauthenticated means you’ll kiss the tiny rate limit wall early and often. Save yourself the sadness:
 
+**macOS/Linux (bash/zsh):**
 ```bash
 export GITHUB_TOKEN=ghp_yourtokenhere
 ```
+
+**Windows (PowerShell):**
+```powershell
+setx GITHUB_TOKEN "ghp_yourtokenhere"
+```
+
+Use a classic or fine-grained personal access token with read access (for public repos, default scopes are typically fine). Then restart your shell. Your future self says thanks.
+
+#### 🔐 Example permissions for your GitHub token
+
+If you like granting “*all the things*,” maybe don’t. Here’s the **minimal** stuff the script needs.
+
+**Fine-grained PAT (recommended):**
+- **Repository access:** *Only selected repositories* (or *All public repositories* if you’re scanning public stuff)
+- **Repository permissions:**
+  - **Contents: Read-only** ✅ *(required: repo details, commits list, `SECURITY.md` content)*
+  - **Issues: Read-only** ✅ *(required if you audit **private** repos; the Search API respects repo permissions)*
+  - **Metadata: Read-only** ✅ *(implicit / auto-granted)*
+- Everything else: **No access** 🚫
+
+**Classic PAT (legacy):**
+- **Public repos only:** Use **`public_repo`** (good enough to bump rate limits).
+- **Need private repos too?** You’ll need **`repo`** (yes, it’s broad; that’s why fine‑grained tokens exist).
+- You do **not** need `admin:repo_hook`, `workflow`, `write:packages`, or any other spicy scopes—unless you enjoy compliance audits and heartburn.
 
 #### 📍 Examples
 
