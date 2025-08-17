@@ -1,6 +1,6 @@
 # Repository Audit Scripts 🚀
 
-Welcome to **Repository Audit Scripts** – the Swiss Army knife for lazy (read: efficient) developers, DevOps gremlins, and security-conscious caffeine addicts. Why manually check things when a script can do it faster, better, and without having to read another 400-page compliance doc?
+Welcome to **Repository Audit Scripts** – the Swiss Army knife for lazy (read: efficient) developers, DevOps gremlins, and security-conscious caffeine addicts. Why manually check things when a script can do it faster, better, and without reading another 400-page compliance doc?
 
 ---
 
@@ -20,39 +20,126 @@ Whether you're trying to impress your boss, appease your CI pipeline, or just wa
 
 This script snoops through your GitHub repo like a nosy neighbor with an API key. Think of it as your overly judgmental auditor with strong opinions and a thing for JSON.
 
-#### 💼 What It Actually Does:
+#### 💼 What It Actually Does
 
-- **📟 Repo Resume Review:**  Checks your repo’s name, license, language, and whether you allow issues.
-- **💀 Last Commit Poke Test:**  Detects inactivity or abandonment.
-- **👷‍♂️ Developer Headcount:**  Counts committers in the last 90 days.
-- **⚖️ License Snooping:**  Scores based on license type.
-- **🛡️ Security Policy Hunt:**  Looks for `SECURITY.md`.
-- **💻 Language Bias:**  Gives points for popular, modern languages.
-- **🐛 Bug Count Check:**  Compares open/closed issues for resolution ratio.
-- **✍️ Signed Commit Detection:**  Checks for cryptographically signed commits.
-- **📈 Trust Score + Risk Level:**  Turns all of this into a neat number and risk label.
-- **📦 Output:**  Saves everything to `repo_audit.json`.
+- **📟 Repo Resume Review:** Checks your repo’s name, license, language, and whether you allow issues.
+- **💀 Last Commit Poke Test:** Detects inactivity or abandonment.
+- **👷‍♂️ Developer Headcount:** Counts unique committers in the last 90 days.
+- **⚖️ License Snooping:** Scores based on license family.
+- **🛡️ Security Policy Hunt:** Looks for `SECURITY.md`.
+- **💻 Language Bias:** Gives points for popular, modern languages.
+- **🐛 Bug Count Check:** Compares open/closed issues for a resolution ratio.
+- **✍️ Signed Commit Detection:** Samples commits and checks for GPG-verified signatures.
+- **📈 Trust Score + Risk Level:** Rolls everything into a neat number and risk label.
+- **📝 Configurable Scoring (NEW):** All thresholds, weights, popular language list, and license scoring are configurable via **INI**.
+- **🧪 CI-friendly:** `--fail-below` exits non-zero if the score doesn’t meet your bar.
+- **📦 Output:** Saves everything to `repo_audit.json`.
 
-#### 🧪 Usage:
+#### 🧪 Usage
 
 ```bash
-python githubaudit.py <owner> <repo> [--skipssl] [--output <file>] [--max-commits N] [--fail-below SCORE]
+python githubaudit.py <owner> <repo> \
+  [--skipssl] \
+  [--output <file>] \
+  [--max-commits N] \
+  [--fail-below SCORE] \
+  [--config path/to/config.ini] \
+  [--write-default-config path/to/new.ini]
 ```
 
-#### 🛠️ Options:
+#### 🛠️ Options
 
 | Flag | Description |
 |------|-------------|
 | `--skipssl` | Skip SSL certificate verification. |
 | `--output` | Output file for audit results (default: `repo_audit.json`). |
-| `--max-commits` | Number of commits to check for signed commits (default: 500). |
+| `--max-commits` | Number of recent commits to sample for signed-commit check (default: 500). |
 | `--fail-below <score>` | Exit with non-zero status if trust score is below this value (0–100). Perfect for CI/CD gates. |
+| `--config <path>` | Load scoring parameters from an **INI** file. |
+| `--write-default-config <path>` | Write a default **INI** with the current built-in parameters and exit. |
 
-#### 📍 Examples:
+#### ⚙️ Configuration (INI)
+
+`githubaudit.py` can load all scoring parameters from an INI file. You can generate a starter file like this:
+
+```bash
+python githubaudit.py --write-default-config github_audit.defaults.ini
+```
+
+Then tweak to taste and run:
+
+```bash
+python githubaudit.py octocat Hello-World --config github_audit.defaults.ini
+```
+
+**What’s configurable?**
+
+- **Recent commit:** `good_days`, `abandoned_days`, `score`
+- **Active developers:** `threshold`, `score` (still counts unique authors over the last **90 days**)
+- **License scoring:** per-family scores for `mit`, `apache`, `gpl`, `mpl`, `lgpl`, and a default `other`
+- **Security policy:** `score`
+- **Language:** `popular` (comma-separated list), `score`
+- **Issue tracking:** `score`
+- **Issue resolution:** `min_issues`, `ratio_threshold`, `score_pass`, `score_fail`
+- **Signed commits:** `ratio_threshold`, `score` (only counted if commits were sampled)
+
+**Example `config.ini`**
+
+```ini
+[recent_commit]
+good_days = 90
+abandoned_days = 365
+score = 1
+
+[active_devs]
+threshold = 5
+score = 1
+
+[license_scores]
+mit = 1
+apache = 1
+gpl = 0.5
+mpl = 0
+lgpl = 0
+other = -1
+
+[security_policy]
+score = 1
+
+[language]
+popular = Python, JavaScript, Go, Rust, Swift, Kotlin, Java, C#
+score = 1
+
+[issue_tracking]
+score = 1
+
+[issue_resolution]
+min_issues = 10
+ratio_threshold = 0.6
+score_pass = 1
+score_fail = -1
+
+[signed_commits]
+ratio_threshold = 0.5
+score = 1
+```
+
+> ℹ️ **Scoring math:** The final score is normalized to 0–100 by dividing by the sum of the **max positive points available** for criteria that apply (e.g., signed-commit points only count in the denominator if commits were sampled).
+
+#### 🔑 Pro tip: API token
+
+Set a GitHub token to avoid rate limits:
+
+```bash
+export GITHUB_TOKEN=ghp_yourtokenhere
+```
+
+#### 📍 Examples
 
 ```bash
 python githubaudit.py octocat Hello-World
 python githubaudit.py octocat Hello-World --fail-below 75
+python githubaudit.py octocat Hello-World --config hardened.ini --fail-below 80
 ```
 
 ---
@@ -61,7 +148,7 @@ python githubaudit.py octocat Hello-World --fail-below 75
 
 Ever pulled a Docker image and thought, *“Hmm, hope this wasn’t uploaded by a sleep-deprived intern in 2016”?* Now you don’t have to guess.
 
-#### 🧠 What It Actually Does:
+#### 🧠 What It Actually Does
 
 - **⭐ Popularity Contest:** Stars = trust points.
 - **📅 Update Freshness:** Penalizes stale images.
@@ -72,19 +159,19 @@ Ever pulled a Docker image and thought, *“Hmm, hope this wasn’t uploaded by 
 - **✅ Signed or Verified:** Rewards signed/verified images.
 - **🎖️ Official Publisher Badge:** Extra points for official badges.
 
-#### 🧾 Output:
+#### 🧾 Output
 
 - **Trust Score** out of 100.
 - **Risk Level** (Very Low, Low, Medium, High, Critical).
 - Saves results to `docker_audit.json`.
 
-#### 🧪 Usage:
+#### 🧪 Usage
 
 ```bash
 python dockeraudit.py <image_name> [--score-details] [--skipssl] [--fail-below SCORE]
 ```
 
-#### 🛠️ Options:
+#### 🛠️ Options
 
 | Flag | Description |
 |------|-------------|
@@ -92,7 +179,7 @@ python dockeraudit.py <image_name> [--score-details] [--skipssl] [--fail-below S
 | `--skipssl` | Skip SSL verification. |
 | `--fail-below <score>` | Exit with non-zero status if trust score is below this value. |
 
-#### 📍 Example:
+#### 📍 Example
 
 ```bash
 python dockeraudit.py bitnami/postgresql --score-details --fail-below 80
@@ -109,13 +196,13 @@ python dockeraudit.py bitnami/postgresql --score-details --fail-below 80
 - 📜 Verifies license existence.
 - Calculates **Trust Score** and **Risk Level**.
 
-#### 🧪 Usage:
+#### 🧪 Usage
 
 ```bash
 python npmaudit.py <package_name> [--checkdependencies] [--skipssl] [--fail-below SCORE]
 ```
 
-#### 🛠️ Options:
+#### 🛠️ Options
 
 | Flag | Description |
 |------|-------------|
@@ -123,7 +210,7 @@ python npmaudit.py <package_name> [--checkdependencies] [--skipssl] [--fail-belo
 | `--skipssl` | Skip SSL verification. |
 | `--fail-below <score>` | Exit with non-zero status if trust score is below this value. |
 
-#### 📍 Example:
+#### 📍 Example
 
 ```bash
 python npmaudit.py express --checkdependencies --fail-below 60
@@ -139,6 +226,20 @@ cd repo-audit-scripts
 pip install -r requirements.txt
 ```
 
+> Python 3.8+ recommended. You’ll want `requests` installed. `configparser` is part of the Python standard library.
+
+---
+
+## CI/CD 💚
+
+Wire `--fail-below` into your pipeline to gate merges:
+
+```bash
+python githubaudit.py yourorg yourrepo --fail-below 75
+```
+
+Return code `1` = block the build; return code `0` = let it through.
+
 ---
 
 ## License 📄
@@ -151,7 +252,10 @@ See [SECURITY.md](SECURITY.md).
 
 ## Contributing 🤝
 
-PRs welcome.
+PRs welcome. If you add new criteria, please also:
+- Expose it in the INI,
+- Document it in this README,
+- Keep the scoring denominator fair (max positive points only).
 
 ---
 
