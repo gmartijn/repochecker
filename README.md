@@ -24,14 +24,16 @@ This script snoops through your GitHub repo like a nosy neighbor with an API key
 
 - **📟 Repo Resume Review:** Checks your repo’s name, license, language, and whether you allow issues.
 - **💀 Last Commit Poke Test:** Detects inactivity or abandonment.
-- **👷‍♂️ Developer Headcount:** Counts unique committers in the last 90 days.
+- **👷‍♂️ Developer Headcount:** Counts unique committers in the last 90 days (ignores bots).
 - **⚖️ License Snooping:** Scores based on license family.
 - **🛡️ Security Policy Hunt:** Looks for `SECURITY.md`.
 - **💻 Language Bias:** Gives points for popular, modern languages.
 - **🐛 Bug Count Check:** Compares open/closed issues for a resolution ratio.
 - **✍️ Signed Commit Detection:** Samples commits and checks for GPG-verified signatures.
+- **📦 Dependency Analysis (NEW):** Detects if GitHub’s dependency graph is enabled.
+- **🕳️ Vulnerability Alerts (NEW):** Pulls open Dependabot alerts and penalizes by severity.
 - **📈 Trust Score + Risk Level:** Rolls everything into a neat number and risk label.
-- **📝 Configurable Scoring (NEW):** All thresholds, weights, popular language list, and license scoring are configurable via **INI**.
+- **📝 Configurable Scoring:** All thresholds, weights, popular language list, license scoring, dependency/vulnerability weights are configurable via **INI**.
 - **🧪 CI-friendly:** `--fail-below` exits non-zero if the score doesn’t meet your bar.
 - **📦 Output:** Saves everything to `repo_audit.json`.
 - **🔑 Prefers a GitHub token:** Yes, it *works* without one, but the unauthenticated rate limit is basically training wheels. Enjoy 403s, or set a token like a responsible adult. 😇
@@ -39,7 +41,7 @@ This script snoops through your GitHub repo like a nosy neighbor with an API key
 #### 🧪 Usage
 
 ```bash
-python githubaudit.py <owner> <repo>   [--skipssl]   [--output <file>]   [--max-commits N]   [--fail-below SCORE]   [--config path/to/config.ini]   [--write-default-config path/to/new.ini]
+python githubaudit.py <owner> <repo>   [--skipssl]   [--output <file>]   [--max-commits N]   [--fail-below SCORE]   [--config path/to/config.ini]   [--write-default-config path/to/new.ini]   [--no-deps]
 ```
 
 #### 🛠️ Options
@@ -52,10 +54,13 @@ python githubaudit.py <owner> <repo>   [--skipssl]   [--output <file>]   [--max-
 | `--fail-below <score>` | Exit with non-zero status if trust score is below this value (0–100). Perfect for CI/CD gates. |
 | `--config <path>` | Load scoring parameters from an **INI** file. |
 | `--write-default-config <path>` | Write a default **INI** with the current built-in parameters and exit. |
+| `--no-deps` | Skip dependency graph + Dependabot vulnerability checks (useful if your token lacks `security_events` scope or you just want a faster run). |
+
+---
 
 #### ⚙️ Configuration (INI)
 
-`githubaudit.py` can load all scoring parameters from an INI file. You can generate a starter file like this:
+Generate a starter file:
 
 ```bash
 python githubaudit.py --write-default-config github_audit.defaults.ini
@@ -67,18 +72,7 @@ Then tweak to taste and run:
 python githubaudit.py octocat Hello-World --config github_audit.defaults.ini
 ```
 
-**What’s configurable?**
-
-- **Recent commit:** `good_days`, `abandoned_days`, `score`
-- **Active developers:** `threshold`, `score` (still counts unique authors over the last **90 days**)
-- **License scoring:** per-family scores for `mit`, `apache`, `gpl`, `mpl`, `lgpl`, and a default `other`
-- **Security policy:** `score`
-- **Language:** `popular` (comma-separated list), `score`
-- **Issue tracking:** `score`
-- **Issue resolution:** `min_issues`, `ratio_threshold`, `score_pass`, `score_fail`
-- **Signed commits:** `ratio_threshold`, `score` (only counted if commits were sampled)
-
-**Example `config.ini`**
+**Example `config.ini`:**
 
 ```ini
 [recent_commit]
@@ -117,50 +111,93 @@ score_fail = -1
 [signed_commits]
 ratio_threshold = 0.5
 score = 1
+
+[dependency_analysis]
+score = 1
+
+[vulnerabilities]
+critical_weight = 4
+high_weight = 2
+medium_weight = 1
+low_weight = 0.5
+none_weight = 0
+max_penalty = 3
+score_pass = 1
+score_fail = -1
 ```
 
-> ℹ️ **Scoring math:** The final score is normalized to 0–100 by dividing by the sum of the **max positive points available** for criteria that apply (e.g., signed-commit points only count in the denominator if commits were sampled).
-
-#### 🔥 Strongly recommended: set a GitHub token (unless you enjoy 403s)
-
-Running unauthenticated means you’ll kiss the tiny rate limit wall early and often. Save yourself the sadness:
-
-**macOS/Linux (bash/zsh):**
-```bash
-export GITHUB_TOKEN=ghp_yourtokenhere
-```
-
-**Windows (PowerShell):**
-```powershell
-setx GITHUB_TOKEN "ghp_yourtokenhere"
-```
-
-Use a classic or fine-grained personal access token with read access (for public repos, default scopes are typically fine). Then restart your shell. Your future self says thanks.
-
-#### 🔐 Example permissions for your GitHub token
-
-If you like granting “*all the things*,” maybe don’t. Here’s the **minimal** stuff the script needs.
-
-**Fine-grained PAT (recommended):**
-- **Repository access:** *Only selected repositories* (or *All public repositories* if you’re scanning public stuff)
-- **Repository permissions:**
-  - **Contents: Read-only** ✅ *(required: repo details, commits list, `SECURITY.md` content)*
-  - **Issues: Read-only** ✅ *(required if you audit **private** repos; the Search API respects repo permissions)*
-  - **Metadata: Read-only** ✅ *(implicit / auto-granted)*
-- Everything else: **No access** 🚫
-
-**Classic PAT (legacy):**
-- **Public repos only:** Use **`public_repo`** (good enough to bump rate limits).
-- **Need private repos too?** You’ll need **`repo`** (yes, it’s broad; that’s why fine‑grained tokens exist).
-- You do **not** need `admin:repo_hook`, `workflow`, `write:packages`, or any other spicy scopes—unless you enjoy compliance audits and heartburn.
+---
 
 #### 📍 Examples
 
 ```bash
+# Basic audit
 python githubaudit.py octocat Hello-World
+
+# CI/CD gate: fail if score < 75
 python githubaudit.py octocat Hello-World --fail-below 75
+
+# Use a hardened INI config and stricter gate
 python githubaudit.py octocat Hello-World --config hardened.ini --fail-below 80
+
+# Skip dependency/vulnerability checks
+python githubaudit.py octocat Hello-World --no-deps
 ```
+
+---
+
+#### 📦 Sample JSON Output
+
+```json
+{
+  "timestamp": "2025-08-30T12:34:56Z",
+  "repository": "octocat/Hello-World",
+  "archived": false,
+  "disabled": false,
+  "last_commit_date": "2025-08-15T09:12:03Z",
+  "active_developers_last_90_days": 14,
+  "license": "MIT License",
+  "security_policy": true,
+  "language": "Go",
+  "issue_tracking_enabled": true,
+  "has_open_or_closed_issues": true,
+  "issue_count_open": 120,
+  "issue_count_closed": 980,
+  "issue_count_total": 1100,
+  "abandoned": false,
+  "signed_commits": 430,
+  "total_commits_sampled": 500,
+  "signed_commit_percentage": 86.0,
+  "dependency_analysis_enabled": true,
+  "dependency_count": 247,
+  "dependabot_open_alerts_total": 2,
+  "dependabot_open_alerts_by_severity": {
+    "critical": 0,
+    "high": 1,
+    "medium": 1,
+    "low": 0,
+    "none": 0
+  },
+  "trust_score": 83.7,
+  "risk_level": "Very Low Risk"
+}
+```
+
+---
+
+### Permissions Matrix 🔑
+
+Depending on what you want to check, your GitHub token needs different scopes. Here’s a handy guide:
+
+| Feature | Public Repos | Private Repos | Token Scope Required |
+|---------|--------------|---------------|----------------------|
+| Repo info (license, language, issues, commits) | ✅ | ✅ | `public_repo` (classic) OR fine-grained with **Contents: Read-only**, **Metadata: Read-only** |
+| Issues & Search API | ✅ | ✅ | `issues: read` (classic) OR fine-grained with **Issues: Read-only** |
+| Security Policy check (`SECURITY.md`) | ✅ | ✅ | Same as contents above |
+| Dependency Graph (SBOM) | ✅ | ✅ | Fine-grained: **Dependency graph: Read-only** |
+| Dependabot alerts (vulnerabilities) | ✅ | ✅ | **security_events** scope (classic) OR fine-grained with **Dependabot alerts: Read-only** |
+
+> Tip: If you just want to audit **public repos**, a classic PAT with `public_repo` scope is usually enough. For **private repos with vulnerability checks**, add `security_events`.
 
 ---
 
@@ -168,73 +205,11 @@ python githubaudit.py octocat Hello-World --config hardened.ini --fail-below 80
 
 Ever pulled a Docker image and thought, *“Hmm, hope this wasn’t uploaded by a sleep-deprived intern in 2016”?* Now you don’t have to guess.
 
-#### 🧠 What It Actually Does
-
-- **⭐ Popularity Contest:** Stars = trust points.
-- **📅 Update Freshness:** Penalizes stale images.
-- **📦 Pull Count Flexing:** More pulls = more trust.
-- **🏷️ Tag Count:** Checks number of tags.
-- **🏢 Org Activity Check:** Detects active organizations.
-- **🙋‍♂️ User Type Scoring:** Org vs individual.
-- **✅ Signed or Verified:** Rewards signed/verified images.
-- **🎖️ Official Publisher Badge:** Extra points for official badges.
-
-#### 🧾 Output
-
-- **Trust Score** out of 100.
-- **Risk Level** (Very Low, Low, Medium, High, Critical).
-- Saves results to `docker_audit.json`.
-
-#### 🧪 Usage
-
-```bash
-python dockeraudit.py <image_name> [--score-details] [--skipssl] [--fail-below SCORE]
-```
-
-#### 🛠️ Options
-
-| Flag | Description |
-|------|-------------|
-| `--score-details` | Show detailed scoring breakdown. |
-| `--skipssl` | Skip SSL verification. |
-| `--fail-below <score>` | Exit with non-zero status if trust score is below this value. |
-
-#### 📍 Example
-
-```bash
-python dockeraudit.py bitnami/postgresql --score-details --fail-below 80
-```
-
 ---
 
 ### `npmaudit.py` – Because Trusting Random NPM Packages Blindly Is So 2015 📦
 
-#### What It Does
-
-- 📆 Checks last published date.
-- 👥 Counts maintainers.
-- 📜 Verifies license existence.
-- Calculates **Trust Score** and **Risk Level**.
-
-#### 🧪 Usage
-
-```bash
-python npmaudit.py <package_name> [--checkdependencies] [--skipssl] [--fail-below SCORE]
-```
-
-#### 🛠️ Options
-
-| Flag | Description |
-|------|-------------|
-| `--checkdependencies` | Audit dependencies recursively. |
-| `--skipssl` | Skip SSL verification. |
-| `--fail-below <score>` | Exit with non-zero status if trust score is below this value. |
-
-#### 📍 Example
-
-```bash
-python npmaudit.py express --checkdependencies --fail-below 60
-```
+Checks NPM package metadata, maintainers, license, and calculates trust.
 
 ---
 
@@ -246,7 +221,7 @@ cd repo-audit-scripts
 pip install -r requirements.txt
 ```
 
-> Python 3.8+ recommended. You’ll want `requests` installed. `configparser` is part of the Python standard library.
+> Python 3.8+ recommended. You’ll want `requests` installed. `configparser` is standard lib.
 
 ---
 
@@ -258,7 +233,9 @@ Wire `--fail-below` into your pipeline to gate merges:
 python githubaudit.py yourorg yourrepo --fail-below 75
 ```
 
-Return code `1` = block the build; return code `0` = let it through.
+- Exit code `0` = pass  
+- Exit code `1` = fail threshold or rate limit  
+- Exit code `2` = invalid args  
 
 ---
 
@@ -280,3 +257,5 @@ PRs welcome. If you add new criteria, please also:
 ---
 
 Audit like a rockstar. 👨‍🎤
+
+And remember: **Auditors are a lot like Vogons**—they don’t actually *hate* you, they just love bureaucracy so much that they’ll bulldoze your codebase to make way for a hyperspace bypass of compliance checklists. Don’t panic, bring a towel, and maybe a GitHub token. 🪐
