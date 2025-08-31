@@ -216,7 +216,7 @@ Checks NPM package metadata, maintainers, license, and calculates trust.
 ## Quick Start 🏃‍♂️
 
 ```bash
-git clone https://github.com/gmartijn/repochecker .git
+git clone  https://github.com/gmartijn/repochecker.git
 cd repochecker
 pip install -r requirements.txt
 ```
