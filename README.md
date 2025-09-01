@@ -205,11 +205,73 @@ Depending on what you want to check, your GitHub token needs different scopes. H
 
 Ever pulled a Docker image and thought, *“Hmm, hope this wasn’t uploaded by a sleep-deprived intern in 2016”?* Now you don’t have to guess.
 
+#### 🧠 What It Actually Does
+
+- **⭐ Popularity Contest:** Stars = trust points.
+- **📅 Update Freshness:** Penalizes stale images.
+- **📦 Pull Count Flexing:** More pulls = more trust.
+- **🏷️ Tag Count:** Checks number of tags.
+- **🏢 Org Activity Check:** Detects active organizations.
+- **🙋‍♂️ User Type Scoring:** Org vs individual.
+- **✅ Signed or Verified:** Rewards signed/verified images.
+- **🎖️ Official Publisher Badge:** Extra points for official badges.
+
+#### 🧾 Output
+
+- **Trust Score** out of 100.
+- **Risk Level** (Very Low, Low, Medium, High, Critical).
+- Saves results to `docker_audit.json`.
+
+#### 🧪 Usage
+
+```bash
+python dockeraudit.py <image_name> [--score-details] [--skipssl] [--fail-below SCORE]
+```
+
+#### 🛠️ Options
+
+| Flag | Description |
+|------|-------------|
+| `--score-details` | Show detailed scoring breakdown. |
+| `--skipssl` | Skip SSL verification. |
+| `--fail-below <score>` | Exit with non-zero status if trust score is below this value. |
+
+#### 📍 Example
+
+```bash
+python dockeraudit.py bitnami/postgresql --score-details --fail-below 80
+```
+
 ---
 
 ### `npmaudit.py` – Because Trusting Random NPM Packages Blindly Is So 2015 📦
 
-Checks NPM package metadata, maintainers, license, and calculates trust.
+#### What It Does
+
+- 📆 Checks last published date.
+- 👥 Counts maintainers.
+- 📜 Verifies license existence.
+- Calculates **Trust Score** and **Risk Level**.
+
+#### 🧪 Usage
+
+```bash
+python npmaudit.py <package_name> [--checkdependencies] [--skipssl] [--fail-below SCORE]
+```
+
+#### 🛠️ Options
+
+| Flag | Description |
+|------|-------------|
+| `--checkdependencies` | Audit dependencies recursively. |
+| `--skipssl` | Skip SSL verification. |
+| `--fail-below <score>` | Exit with non-zero status if trust score is below this value. |
+
+#### 📍 Example
+
+```bash
+python npmaudit.py express --checkdependencies --fail-below 60
+```
 
 ---
 
