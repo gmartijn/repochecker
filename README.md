@@ -297,6 +297,8 @@ This script asks the hard questions, so you don’t have to.
 - **📊 Trust Score + Risk Level:** Rolls it all up into **health percent** and **risk percent**.  
 - **📝 JSON & TL;DR:** Saves results to JSON and prints a human-friendly summary with per-metric comments.  
 
+When interested in the calculation model behind this beasty: (https://github.com/gmartijn/repochecker/blob/main/py_pi_audit_score_calculation.md)
+
 #### 🧪 Usage
 
 ```bash
