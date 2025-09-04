@@ -275,6 +275,92 @@ python npmaudit.py express --checkdependencies --fail-below 60
 
 ---
 
+### `pypiaudit.py` – Package Whisperer for PyPI 📦🔍
+
+Ever installed a package from PyPI and thought, *“Is this safe, or am I about to adopt someone’s abandoned side project from 2012?”*  
+This script asks the hard questions, so you don’t have to.
+
+#### 🧠 What It Actually Does
+
+- **📅 Release Freshness:** Checks when the last version was uploaded.  
+- **📈 Release Cadence:** Looks at how many releases in the past year.  
+- **📜 License Reality Check:** Detects license presence and whether it’s OSI-approved.  
+- **🐍 Python Version Declared:** Verifies `requires_python`.  
+- **🏗️ Development Status:** Scores maturity from “Planning” to “Mature.”  
+- **📖 Documentation Check:** Measures README length (longer ≠ better prose, but at least *some* effort).  
+- **👩‍💻 Maintainer Existence:** Makes sure someone’s name/email is in there.  
+- **🛞 Wheel of Fortune:** Checks if wheels are published (with bonus points for manylinux/abi3 and Python 3 tags).  
+- **🔗 URL Breadcrumbs:** Homepage, repo, docs links.  
+- **🏷️ CI Badge Detector:** Scans README for signs of automated testing.  
+- **📦 Dependency Count:** Penalizes heavy dependency chains.  
+- **🐛 Vulnerability Lookup:** Cross-checks with OSV advisories.  
+- **📊 Trust Score + Risk Level:** Rolls it all up into **health percent** and **risk percent**.  
+- **📝 JSON & TL;DR:** Saves results to JSON and prints a human-friendly summary with per-metric comments.  
+
+#### 🧪 Usage
+
+```bash
+python pypiaudit.py <package_name> [--pretty] [--timeout 15] [--no-osv] [--fail-above SCORE] [--fail-below SCORE]
+```
+
+#### 🛠️ Options
+
+| Flag | Description |
+|------|-------------|
+| `--pretty` | Pretty-print JSON output. |
+| `--timeout` | HTTP timeout in seconds (default: 15). |
+| `--no-osv` | Skip OSV vulnerability check. |
+| `--fail-above <risk %>` | Exit non-zero if *risk percent* is above this value (preferred). |
+| `--fail-below <health %>` | Legacy: exit if *health percent* is below this value. |
+| `--out <file>` | Output JSON file path (default: auto-named). |
+| `--no-tldr` | Skip TL;DR summary output. |
+| `--stdout-json` | Print the JSON payload to stdout. |
+
+#### 📍 Examples
+
+```bash
+# Basic audit
+python pypiaudit.py requests
+
+# Fail if risk percent > 40
+python pypiaudit.py django --fail-above 40
+
+# Pretty JSON + skip OSV check
+python pypiaudit.py numpy --pretty --no-osv
+```
+
+#### 📦 Sample JSON Output
+
+```json
+{
+  "package": "requests",
+  "collected_at": "2025-09-04T12:34:56Z",
+  "score_total_good": 82,
+  "score_max": 85,
+  "health_percent": 96.5,
+  "risk_percent": 3.5,
+  "risk_level": "Very Low",
+  "risk_level_display": "[VERY LOW]",
+  "risk_level_rank": 1,
+  "info": {
+    "name": "requests",
+    "summary": "Python HTTP for Humans.",
+    "version": "2.31.0",
+    "home_page": "https://requests.readthedocs.io",
+    "project_urls": {
+      "Source": "https://github.com/psf/requests"
+    }
+  },
+  "highlights": [
+    "Active releases in the last 4 months.",
+    "Pre-built Python 3 wheels available.",
+    "Clear OSI-style license."
+  ]
+}
+```
+
+---
+
 ## Quick Start 🏃‍♂️
 
 ```bash
