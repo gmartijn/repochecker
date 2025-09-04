@@ -2,14 +2,14 @@
 # -*- coding: utf-8 -*-
 
 """
-pypi_package_audit.py
+pypi_audit.py
 Audits PyPI packages, writes JSON to a file by default, and prints a TL;DR breakdown.
 INVERTED MODEL: Lower percent = better (safer). Higher percent = worse (riskier).
 
 Risk display: [VERY LOW], [LOW], [MEDIUM], [HIGH], [CRITICAL]
 
 Usage:
-  python pypi_package_audit.py <package> [<package> ...]
+  python pypi_audit.py <package> [<package> ...]
     [--pretty] [--timeout 15] [--no-osv]
     [--fail-above 70] [--fail-below 85]   # fail-above uses RISK %, fail-below uses HEALTH %
     [--out report.json]
