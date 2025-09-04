@@ -275,7 +275,7 @@ python npmaudit.py express --checkdependencies --fail-below 60
 
 ---
 
-### `pypiaudit.py` – Package Whisperer for PyPI 📦🔍
+### `pypi_audit.py` – Package Whisperer for PyPI 📦🔍
 
 Ever installed a package from PyPI and thought, *“Is this safe, or am I about to adopt someone’s abandoned side project from 2012?”*  
 This script asks the hard questions, so you don’t have to.
