@@ -2,19 +2,25 @@
 # -*- coding: utf-8 -*-
 
 """
-pypi_package_audit.py
+pypi_audit.py
 Audits PyPI packages, writes JSON to a file by default, and prints a TL;DR breakdown.
 INVERTED MODEL: Lower percent = better (safer). Higher percent = worse (riskier).
 
 Risk display: [VERY LOW], [LOW], [MEDIUM], [HIGH], [CRITICAL]
 
 Usage:
-  python pypi_package_audit.py <package> [<package> ...]
+  python pypi_audit.py <package> [<package> ...]
+    [--file packages.txt]
     [--pretty] [--timeout 15] [--no-osv]
     [--fail-above 70] [--fail-below 85]   # fail-above uses RISK %, fail-below uses HEALTH %
     [--out report.json]
     [--no-tldr]
     [--stdout-json]
+
+Notes:
+- Package arguments may include version pins, e.g. `requests==2.31.0` or `packaging==16.8`.
+- Extras/specifiers like `foo[bar]==1.0` are accepted; extras are ignored for metadata fetch.
+- If an exact version is pinned (== or ===), wheel/recency checks and OSV queries target that version.
 
 Exit codes:
   0 = success
@@ -62,8 +68,7 @@ WEIGHTS = {
 }
 
 # Inverted risk thresholds (higher percent = worse).
-# Thresholds are inclusive on the upper bound.
-# Returns label, bracketed display, and rank (1 best .. 5 worst).
+# Returns label, [DISPLAY], rank (1 best .. 5 worst).
 RISK_THRESHOLDS_INVERTED = [
     (15, ("Very Low",  "[VERY LOW]", 1)),
     (30, ("Low",       "[LOW]",      2)),
@@ -107,6 +112,43 @@ CI_BADGE_PATTERNS = [
     r"gitlab\.com/.+/-/pipelines",
 ]
 
+# ---------- Version parsing helpers ----------
+
+_SPEC_SPLIT_RE = re.compile(
+    r"""^\s*
+        (?P<name>[A-Za-z0-9][A-Za-z0-9._-]*)
+        (?:\[[^\]]*\])?                 # optional extras, ignored
+        \s*
+        (?:
+            (?P<op>===|==|!=|~=|>=|<=|>|<)
+            \s*
+            (?P<ver>[A-Za-z0-9][A-Za-z0-9._+-]*)
+        )?
+        \s*$
+    """,
+    re.VERBOSE,
+)
+
+def parse_name_and_exact_version(s: str) -> Tuple[str, Optional[str]]:
+    """
+    Returns (name, exact_version or None). Only returns a version if operator is == or ===.
+    Accepts extras like 'pkg[extra]==1.2' and ignores the extras.
+    If the string doesn't match, fallback to treating the whole string as the name.
+    """
+    m = _SPEC_SPLIT_RE.match(s)
+    if not m:
+        # Fallback: strip anything after first specifier char
+        name = re.split(r"[<>=!~\s]", s, 1)[0]
+        return name, None
+    name = m.group("name")
+    op = m.group("op")
+    ver = m.group("ver")
+    if op in ("==", "===") and ver:
+        return name, ver
+    return name, None
+
+# ---------- Data classes ----------
+
 @dataclass
 class Metric:
     name: str
@@ -114,6 +156,8 @@ class Metric:
     weight: int
     score: float
     comment: str
+
+# ---------- Networking ----------
 
 def make_session(timeout: int) -> requests.Session:
     sess = requests.Session()
@@ -148,6 +192,8 @@ def get_json(sess: requests.Session, url: str, method: str = "GET", payload: Opt
 def fetch_pypi_metadata(sess: requests.Session, name: str) -> Optional[dict]:
     return get_json(sess, PYPI_JSON_URL.format(name=name))
 
+# ---------- Helpers over PyPI JSON ----------
+
 def parse_latest_release_date(data: dict) -> Optional[dt.datetime]:
     releases = data.get("releases") or {}
     latest_dt = None
@@ -170,6 +216,22 @@ def parse_latest_release_date(data: dict) -> Optional[dt.datetime]:
                 latest_dt = dt.datetime.fromisoformat(up.replace("Z", "+00:00"))
             except Exception:
                 latest_dt = None
+    return latest_dt
+
+def release_date_for_version(data: dict, version: str) -> Optional[dt.datetime]:
+    releases = data.get("releases") or {}
+    files = releases.get(version) or []
+    latest_dt = None
+    for f in files:
+        up = f.get("upload_time_iso_8601") or f.get("upload_time")
+        if not up:
+            continue
+        try:
+            up_dt = dt.datetime.fromisoformat(up.replace("Z", "+00:00"))
+        except Exception:
+            continue
+        if (latest_dt is None) or (up_dt > latest_dt):
+            latest_dt = up_dt
     return latest_dt
 
 def releases_in_last_days(data: dict, days: int = 365) -> int:
@@ -253,22 +315,23 @@ def has_ci_badge(info: dict) -> bool:
             return True
     return False
 
-def wheel_presence(data: dict) -> Tuple[bool, bool, bool]:
+def wheel_presence_for_version(data: dict, version: Optional[str]) -> Tuple[bool, bool, bool]:
     info = data.get("info") or {}
-    version = info.get("version")
+    ver = version or info.get("version")
     releases = data.get("releases") or {}
-    files = releases.get(version) or []
+    files = releases.get(ver) or []
     has_wheel = False
     manylinux_or_abi3 = False
     py3_wheel = False
     for f in files:
-        fn = f.get("filename") or ""
+        fn = (f.get("filename") or "")
         packagetype = f.get("packagetype")
         if packagetype == "bdist_wheel" or fn.endswith(".whl"):
             has_wheel = True
-            if "manylinux" in fn.lower() or "abi3" in fn.lower():
+            fl = fn.lower()
+            if "manylinux" in fl or "abi3" in fl:
                 manylinux_or_abi3 = True
-            if "py3" in fn.lower() or "cp3" in fn.lower():
+            if "py3" in fl or "cp3" in fl:
                 py3_wheel = True
     return has_wheel, manylinux_or_abi3, py3_wheel
 
@@ -276,8 +339,10 @@ def dependency_count(info: dict) -> int:
     reqs = info.get("requires_dist") or []
     return len(reqs)
 
-def osv_vulnerability_count(sess: requests.Session, package: str) -> Optional[int]:
+def osv_vulnerability_count(sess: requests.Session, package: str, version: Optional[str]) -> Optional[int]:
     payload = {"package": {"name": package, "ecosystem": "PyPI"}}
+    if version:
+        payload["version"] = version
     data = get_json(sess, OSV_QUERY_URL, method="POST", payload=payload)
     if not data:
         return None
@@ -288,30 +353,45 @@ def clamp(v: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, v))
 
 def risk_tuple_from_percent(risk_percent: float) -> Tuple[str, str, int]:
-    """Return (label, [DISPLAY], rank) for given risk percent."""
     for threshold, tup in RISK_THRESHOLDS_INVERTED:
         if risk_percent <= threshold:
             return tup
     return ("Critical", "[CRITICAL]", 5)
 
-def score_one(meta: dict, include_osv: bool, sess: requests.Session, name: str) -> Dict[str, Any]:
+# ---------- Scoring ----------
+
+def score_one(meta: dict, include_osv: bool, sess: requests.Session, name: str, exact_version: Optional[str]) -> Dict[str, Any]:
     info = meta.get("info") or {}
     metrics: List[Metric] = []
 
-    # --- Compute "goodness points" as before ---
-    latest_dt = parse_latest_release_date(meta)
-    if latest_dt:
-        days = (dt.datetime.now(dt.timezone.utc) - latest_dt).days
-        recency_factor = clamp(1 - days / 365.0, 0, 1)
-        score = recency_factor * WEIGHTS["recent_release"]
-        comment = f"Last release {days} days ago ({latest_dt.date().isoformat()})."
+    # Recency: if version pinned, use that version's upload date; else latest across all.
+    if exact_version:
+        vdt = release_date_for_version(meta, exact_version)
+        if vdt:
+            days = (dt.datetime.now(dt.timezone.utc) - vdt).days
+            recency_factor = clamp(1 - days / 365.0, 0, 1)
+            score = recency_factor * WEIGHTS["recent_release"]
+            comment = f"Version {exact_version} released {days} days ago ({vdt.date().isoformat()})."
+        else:
+            days = None
+            score = 0
+            comment = f"Version {exact_version} not found in releases."
     else:
-        score = 0
-        comment = "No release date found."
-        days = None
+        latest_dt = parse_latest_release_date(meta)
+        if latest_dt:
+            days = (dt.datetime.now(dt.timezone.utc) - latest_dt).days
+            recency_factor = clamp(1 - days / 365.0, 0, 1)
+            score = recency_factor * WEIGHTS["recent_release"]
+            comment = f"Last release {days} days ago ({latest_dt.date().isoformat()})."
+        else:
+            score = 0
+            comment = "No release date found."
+            days = None
+
     metrics.append(Metric("recent_release", days if days is not None else "unknown",
                           WEIGHTS["recent_release"], round(score, 2), comment))
 
+    # Cadence still based on the project overall (not just one pinned version)
     rels_year = releases_in_last_days(meta, 365)
     cadence_factor = clamp(rels_year / 6.0, 0, 1)
     metrics.append(Metric("release_cadence_last_365d", rels_year, WEIGHTS["release_cadence"],
@@ -346,10 +426,13 @@ def score_one(meta: dict, include_osv: bool, sess: requests.Session, name: str) 
                           WEIGHTS["maintainer_present"] if maint_ok else 0,
                           "Maintainer/author metadata present." if maint_ok else "Maintainer/author fields missing."))
 
-    has_wheel, has_manylinux_or_abi3, has_py3 = wheel_presence(meta)
-    metrics.append(Metric("latest_has_wheel", has_wheel, WEIGHTS["wheels_present"],
+    has_wheel, has_manylinux_or_abi3, has_py3 = wheel_presence_for_version(meta, exact_version)
+    metrics.append(Metric("latest_has_wheel" if not exact_version else "pinned_has_wheel",
+                          has_wheel, WEIGHTS["wheels_present"],
                           WEIGHTS["wheels_present"] if has_wheel else 0,
-                          "Wheel available for latest version." if has_wheel else "Latest version appears sdist-only."))
+                          ("Wheel available for evaluated version." if exact_version else "Wheel available for latest version.")
+                          if has_wheel else
+                          ("Evaluated version appears sdist-only." if exact_version else "Latest version appears sdist-only.")))
     metrics.append(Metric("manylinux_or_abi3", has_manylinux_or_abi3, WEIGHTS["manylinux_or_abi3"],
                           WEIGHTS["manylinux_or_abi3"] if has_manylinux_or_abi3 else 0,
                           "Wheel suggests manylinux/abi3 compatibility." if has_manylinux_or_abi3 else "No manylinux/abi3 hint detected."))
@@ -385,7 +468,7 @@ def score_one(meta: dict, include_osv: bool, sess: requests.Session, name: str) 
 
     osv_count = None
     if include_osv:
-        osv_count = osv_vulnerability_count(sess, name)
+        osv_count = osv_vulnerability_count(sess, name, exact_version)
     if include_osv and osv_count is not None:
         if osv_count == 0:
             osv_score = WEIGHTS["vulns_known_none"]
@@ -399,17 +482,24 @@ def score_one(meta: dict, include_osv: bool, sess: requests.Session, name: str) 
         metrics.append(Metric("vulnerabilities_known_osv", "skipped", WEIGHTS["vulns_known_none"], 0,
                               "OSV check skipped or unavailable."))
 
-    # --- Aggregate GOODNESS points, then invert to RISK percent ---
+    # Aggregate -> percent
     score_total_good = round(sum(m.score for m in metrics), 2)
     score_max = sum(m.weight for m in metrics)
     health_percent = round((score_total_good / score_max) * 100, 1) if score_max else 0.0
     risk_percent = round(100.0 - health_percent, 1)
     risk_label, risk_display, risk_rank = risk_tuple_from_percent(risk_percent)
 
-    # Highlights (descriptive)
+    # Highlights
     highlights = []
-    if latest_dt and (dt.datetime.now(dt.timezone.utc) - latest_dt).days <= 120:
-        highlights.append("Active releases in the last 4 months.")
+    # recency highlight based on evaluated target
+    if exact_version:
+        vdt = release_date_for_version(meta, exact_version)
+        if vdt and (dt.datetime.now(dt.timezone.utc) - vdt).days <= 120:
+            highlights.append(f"{name}=={exact_version} released in the last 4 months.")
+    else:
+        latest_dt = parse_latest_release_date(meta)
+        if latest_dt and (dt.datetime.now(dt.timezone.utc) - latest_dt).days <= 120:
+            highlights.append("Active releases in the last 4 months.")
     if has_wheel and has_py3:
         highlights.append("Pre-built Python 3 wheels available.")
     if has_lic and looks_osi:
@@ -423,30 +513,33 @@ def score_one(meta: dict, include_osv: bool, sess: requests.Session, name: str) 
     if include_osv and (osv_count not in (None, 0)):
         highlights.append("Known vulnerabilities present—investigate advisories.")
 
+    evaluated_version = exact_version or info.get("version")
+
     return {
         "package": name,
+        "requested": {"raw": None, "exact_version": exact_version} if exact_version else {"raw": None, "exact_version": None},
         "collected_at": dt.datetime.utcnow().isoformat() + "Z",
-        # Goodness and health
         "score_total_good": score_total_good,
         "score_max": score_max,
         "health_percent": health_percent,
-        # Main risk percent (higher = worse). Alias as score_percent for compatibility.
         "risk_percent": risk_percent,
         "score_percent": risk_percent,
-        # Risk labels (new style)
         "risk_level": risk_label,
         "risk_level_display": risk_display,
         "risk_level_rank": risk_rank,
         "info": {
             "name": info.get("name"),
             "summary": info.get("summary"),
-            "version": info.get("version"),
+            "version_latest": info.get("version"),
+            "evaluated_version": evaluated_version,
             "home_page": info.get("home_page"),
             "project_urls": info.get("project_urls"),
         },
         "metrics": [asdict(m) for m in metrics],
         "highlights": highlights,
     }
+
+# ---------- I/O ----------
 
 def print_tldr(results: List[Dict[str, Any]], fail_above: Optional[float], fail_below: Optional[float]) -> None:
     print("\n=== PyPI Audit TL;DR (Inverted: lower is better) ===")
@@ -459,18 +552,16 @@ def print_tldr(results: List[Dict[str, Any]], fail_above: Optional[float], fail_
     for r in results:
         name = r.get("package")
         info = r.get("info") or {}
-        version = (info or {}).get("version") or "unknown"
+        evaluated_version = (info or {}).get("evaluated_version") or "unknown"
         if "error" in r:
             print(f"[ERROR] - {name}: {r['error']}\n")
             continue
         risk_display = r.get("risk_level_display", "[UNKNOWN]")
-        risk_label = r.get("risk_level", "Unknown")
         risk_percent = r.get("risk_percent")
         health_percent = r.get("health_percent")
         total_good = r.get("score_total_good")
         smax = r.get("score_max")
-        print(f"{risk_display} {name} @ {version}: RISK {risk_percent}% (Health {health_percent}%)  GoodPoints {total_good}/{smax}")
-        # Per-metric breakdown
+        print(f"{risk_display} {name} @ {evaluated_version}: RISK {risk_percent}% (Health {health_percent}%)  GoodPoints {total_good}/{smax}")
         for m in r.get("metrics", []):
             print(f"    • {m['name']}: {m['score']}/{m['weight']} – {m['comment']}")
         highs = r.get("highlights") or []
@@ -496,9 +587,23 @@ def write_json_file(path: str, payload: Any, pretty: bool) -> None:
         print(f"ERROR: failed to write JSON to '{path}': {e}", file=sys.stderr)
         sys.exit(1)
 
+def read_packages_from_file(path: str) -> List[str]:
+    """Read a file and return package specs split by newline, spaces, or commas."""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            text = f.read()
+    except OSError as e:
+        print(f"ERROR: failed to read package file '{path}': {e}", file=sys.stderr)
+        sys.exit(1)
+    parts = re.split(r"[\s,]+", text.strip())
+    return [p for p in parts if p]
+
+# ---------- Main ----------
+
 def main():
     parser = argparse.ArgumentParser(description="Audit PyPI packages for trust & risk signals (inverted scoring).")
-    parser.add_argument("packages", nargs="+", help="One or more PyPI package names.")
+    parser.add_argument("packages", nargs="*", help="One or more PyPI package names (optional specifiers, e.g., name==1.2.3).")
+    parser.add_argument("--file", type=str, help="Read package names from a file (newline/space/comma-separated).")
     parser.add_argument("--pretty", action="store_true", help="Pretty-print JSON (file and --stdout-json).")
     parser.add_argument("--timeout", type=int, default=15, help="HTTP timeout in seconds (default: 15).")
     parser.add_argument("--no-osv", action="store_true", help="Skip OSV vulnerability check.")
@@ -513,6 +618,21 @@ def main():
     parser.add_argument("--no-tldr", action="store_true", help="Do not print the TL;DR breakdown.")
     parser.add_argument("--stdout-json", action="store_true", help="Also print the JSON payload to stdout.")
     args = parser.parse_args()
+
+    # Build package list from CLI + optional file
+    raw_specs: List[str] = list(args.packages) if args.packages else []
+    if args.file:
+        raw_specs.extend(read_packages_from_file(args.file))
+
+    if not raw_specs:
+        print("No packages specified. Provide package names or use --file <path>.", file=sys.stderr)
+        sys.exit(1)
+
+    # Parse specs into (name, exact_version_or_None)
+    to_audit: List[Tuple[str, Optional[str], str]] = []  # (name, exact_ver, original_spec)
+    for spec in raw_specs:
+        name, exact_ver = parse_name_and_exact_version(spec)
+        to_audit.append((name, exact_ver, spec))
 
     # Validate thresholds
     def valid_pct(x):
@@ -529,17 +649,35 @@ def main():
     had_operational_error = False
     gate_failed = False
 
-    for pkg in args.packages:
-        meta = fetch_pypi_metadata(sess, pkg)
+    for name, exact_ver, original in to_audit:
+        meta = fetch_pypi_metadata(sess, name)
         if not meta:
             results.append({
-                "package": pkg,
+                "package": name,
+                "requested": {"raw": original, "exact_version": exact_ver},
                 "collected_at": dt.datetime.utcnow().isoformat() + "Z",
                 "error": "Package not found or PyPI unreachable."
             })
             had_operational_error = True
             continue
-        scored = score_one(meta, include_osv=not args.no_osv, sess=sess, name=pkg)
+
+        # If an exact version was requested but is not in releases, return a specific error.
+        if exact_ver and exact_ver not in (meta.get("releases") or {}):
+            results.append({
+                "package": name,
+                "requested": {"raw": original, "exact_version": exact_ver},
+                "collected_at": dt.datetime.utcnow().isoformat() + "Z",
+                "error": f"Version '{exact_ver}' not found for package '{name}'."
+            })
+            had_operational_error = True
+            continue
+
+        scored = score_one(meta, include_osv=not args.no_osv, sess=sess, name=name, exact_version=exact_ver)
+        # attach the original spec
+        if "requested" in scored:
+            scored["requested"]["raw"] = original
+        else:
+            scored["requested"] = {"raw": original, "exact_version": exact_ver}
         results.append(scored)
 
     # Apply gates (prefer fail-above if present)
@@ -558,7 +696,7 @@ def main():
                     break
 
     # Write JSON report
-    out_path = args.out or default_out_path(args.packages)
+    out_path = args.out or default_out_path([s for s in (spec for _, _, spec in to_audit)])
     payload = results if len(results) > 1 else results[0]
     write_json_file(out_path, payload, pretty=args.pretty)
 
