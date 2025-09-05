@@ -275,7 +275,7 @@ python npmaudit.py express --checkdependencies --fail-below 60
 
 ---
 
-### `pypiaudit.py` – Package Whisperer for PyPI 📦🔍
+### `pypi_audit.py` – Package Whisperer for PyPI 📦🔍
 
 Ever installed a package from PyPI and thought, *“Is this safe, or am I about to adopt someone’s abandoned side project from 2012?”*  
 This script asks the hard questions, so you don’t have to.
@@ -296,6 +296,8 @@ This script asks the hard questions, so you don’t have to.
 - **🐛 Vulnerability Lookup:** Cross-checks with OSV advisories.  
 - **📊 Trust Score + Risk Level:** Rolls it all up into **health percent** and **risk percent**.  
 - **📝 JSON & TL;DR:** Saves results to JSON and prints a human-friendly summary with per-metric comments.  
+
+When interested in the calculation model behind this beasty: (https://github.com/gmartijn/repochecker/blob/main/py_pi_audit_score_calculation.md)
 
 #### 🧪 Usage
 
