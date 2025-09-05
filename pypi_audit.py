@@ -3,7 +3,6 @@
 
 """
 pypi_audit.py
-pypi_audit.py
 Audits PyPI packages, writes JSON to a file by default, and prints a TL;DR breakdown.
 INVERTED MODEL: Lower percent = better (safer). Higher percent = worse (riskier).
 
