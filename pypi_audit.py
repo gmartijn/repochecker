@@ -4,9 +4,7 @@
 """
 pypi_audit.py
 Audits one or more PyPI packages for quality & supply‑chain risk signals and
-produces a weighted trust score (0‑100) with a breakdown similar in spirit to
-the Docker image audit script.
-
+produces a weighted trust score (0‑100).
 Usage:
   python pypi_audit.py <package> [<package> ...]
     [--file packages.txt]
