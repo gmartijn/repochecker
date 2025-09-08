@@ -4,31 +4,35 @@
 """
 pypi_audit.py
 Audits one or more PyPI packages for quality & supply‑chain risk signals and
-produces a weighted trust score (0‑100).
+produces a weighted trust score (0‑100) with a breakdown similar in spirit to
+the Docker image audit script.
 
 Usage:
-    python pypi_audit.py <package> [<package> ...] [options]
+  python pypi_audit.py <package> [<package> ...]
+    [--file packages.txt]
+    [--pretty] [--timeout 15] [--no-osv]
+    [--fail-above 70] [--fail-below 85]   # fail-above uses RISK %, fail-below uses HEALTH %
+    [--out report.json]
+    [--no-tldr]
+    [--stdout-json]
 
-Key options:
-    --pretty            Pretty print stdout JSON.
-    --json              Only write results to pypi_audit.json (no console summary).
-    --score-details     Include per-metric breakdown in file output (always present internally).
-    --timeout N         HTTP timeout (default 15s).
-    --no-osv            Skip OSV vulnerability lookup.
-    --fail-below X      Exit non‑zero if any package score < X (0‑100).
+Notes:
+- Package arguments may include version pins, e.g. `requests==2.31.0` or `packaging==16.8`.
+- Extras/specifiers like `foo[bar]==1.0` are accepted; extras are ignored for metadata fetch.
+- If an exact version is pinned (== or ===), wheel/recency checks and OSV queries target that version.
 
-Examples:
-    python pypi_audit.py requests --pretty
-    python pypi_audit.py fastapi uvicorn --pretty --timeout 20 --fail-below 70
-    python pypi_audit.py numpy --json --score-details
+Exit codes:
+  0 = success
+  1 = operational error (e.g., fetch failed, bad args, write error)
+  2 = quality gate failed
 """
 
 import argparse
 import datetime as dt
 import json
+import os
 import re
 import sys
-from collections import defaultdict
 from dataclasses import dataclass, asdict
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -43,14 +47,14 @@ except ImportError:
 PYPI_JSON_URL = "https://pypi.org/pypi/{name}/json"
 OSV_QUERY_URL = "https://api.osv.dev/v1/query"
 
-# ---------- Scoring Weights (tweak as you like) ----------
+# ---------- Metric Weights ----------
 WEIGHTS = {
-    "recent_release": 15,         # recency of latest release
-    "release_cadence": 10,        # number of releases in last 365 days
+    "recent_release": 15,
+    "release_cadence": 10,
     "has_license": 10,
     "license_osi_approved": 5,
     "has_requires_python": 8,
-    "dev_status": 8,              # from trove classifiers
+    "dev_status": 8,
     "has_readme": 5,
     "maintainer_present": 5,
     "wheels_present": 8,
@@ -58,34 +62,21 @@ WEIGHTS = {
     "py3_wheel": 4,
     "project_urls": 5,
     "ci_badge_hint": 2,
-    "dep_count_reasonable": 5,    # penalize extremes
-    "vulns_known_none": 6,        # reward if no known OSV vulns
+    "dep_count_reasonable": 5,
+    "vulns_known_none": 6,
 }
 
-# Risk level (inverse) retained for backwards compatibility; higher % = lower risk
-RISK_THRESHOLDS = [
-    (85, "Low"),
-    (70, "Moderate"),
-    (50, "Elevated"),
-    (30, "High"),
-    (0,  "Critical"),
+# Inverted risk thresholds (higher percent = worse).
+# Returns label, [DISPLAY], rank (1 best .. 5 worst).
+RISK_THRESHOLDS_INVERTED = [
+    (15, ("Very Low",  "[VERY LOW]", 1)),
+    (30, ("Low",       "[LOW]",      2)),
+    (50, ("Medium",    "[MEDIUM]",   3)),
+    (70, ("High",      "[HIGH]",     4)),
+    (100,("Critical",  "[CRITICAL]", 5)),
 ]
 
-# Docker-style trust levels (higher % => stronger trust)
-def trust_level(percent: float) -> str:
-    if percent >= 90:
-        return "Critical"
-    if percent >= 75:
-        return "High"
-    if percent >= 50:
-        return "Medium"
-    if percent >= 25:
-        return "Low"
-    return "Very Low"
-
 DEV_STATUS_POINTS = {
-    # Trove: "Development Status :: X - Label"
-    # Map to a 0..1 scale we’ll multiply by weight
     "1 - Planning": 0.2,
     "2 - Pre-Alpha": 0.2,
     "3 - Alpha": 0.4,
@@ -96,7 +87,6 @@ DEV_STATUS_POINTS = {
 }
 
 OSI_LICENSE_HINTS = [
-    # Not exhaustive—just common strings found in classifiers or license field
     "Apache Software License",
     "MIT License",
     "BSD License",
@@ -121,6 +111,43 @@ CI_BADGE_PATTERNS = [
     r"gitlab\.com/.+/-/pipelines",
 ]
 
+# ---------- Version parsing helpers ----------
+
+_SPEC_SPLIT_RE = re.compile(
+    r"""^\s*
+        (?P<name>[A-Za-z0-9][A-Za-z0-9._-]*)
+        (?:\[[^\]]*\])?                 # optional extras, ignored
+        \s*
+        (?:
+            (?P<op>===|==|!=|~=|>=|<=|>|<)
+            \s*
+            (?P<ver>[A-Za-z0-9][A-Za-z0-9._+-]*)
+        )?
+        \s*$
+    """,
+    re.VERBOSE,
+)
+
+def parse_name_and_exact_version(s: str) -> Tuple[str, Optional[str]]:
+    """
+    Returns (name, exact_version or None). Only returns a version if operator is == or ===.
+    Accepts extras like 'pkg[extra]==1.2' and ignores the extras.
+    If the string doesn't match, fallback to treating the whole string as the name.
+    """
+    m = _SPEC_SPLIT_RE.match(s)
+    if not m:
+        # Fallback: strip anything after first specifier char
+        name = re.split(r"[<>=!~\s]", s, 1)[0]
+        return name, None
+    name = m.group("name")
+    op = m.group("op")
+    ver = m.group("ver")
+    if op in ("==", "===") and ver:
+        return name, ver
+    return name, None
+
+# ---------- Data classes ----------
+
 @dataclass
 class Metric:
     name: str
@@ -128,6 +155,8 @@ class Metric:
     weight: int
     score: float
     comment: str
+
+# ---------- Networking ----------
 
 def make_session(timeout: int) -> requests.Session:
     sess = requests.Session()
@@ -152,10 +181,7 @@ def _timeout_request_wrapper(func, timeout: int):
 
 def get_json(sess: requests.Session, url: str, method: str = "GET", payload: Optional[dict] = None) -> Optional[dict]:
     try:
-        if method == "GET":
-            r = sess.get(url)
-        else:
-            r = sess.post(url, json=payload or {})
+        r = sess.get(url) if method == "GET" else sess.post(url, json=payload or {})
         if r.status_code == 200:
             return r.json()
         return None
@@ -164,6 +190,8 @@ def get_json(sess: requests.Session, url: str, method: str = "GET", payload: Opt
 
 def fetch_pypi_metadata(sess: requests.Session, name: str) -> Optional[dict]:
     return get_json(sess, PYPI_JSON_URL.format(name=name))
+
+# ---------- Helpers over PyPI JSON ----------
 
 def parse_latest_release_date(data: dict) -> Optional[dt.datetime]:
     releases = data.get("releases") or {}
@@ -174,13 +202,11 @@ def parse_latest_release_date(data: dict) -> Optional[dt.datetime]:
             if not up:
                 continue
             try:
-                # PyPI times are UTC ISO 8601, may end with 'Z'
                 up_dt = dt.datetime.fromisoformat(up.replace("Z", "+00:00"))
             except Exception:
                 continue
             if (latest_dt is None) or (up_dt > latest_dt):
                 latest_dt = up_dt
-    # Fallback to info.upload_time if needed (rare)
     if latest_dt is None:
         info = data.get("info") or {}
         up = info.get("upload_time_iso_8601") or info.get("upload_time")
@@ -191,11 +217,27 @@ def parse_latest_release_date(data: dict) -> Optional[dt.datetime]:
                 latest_dt = None
     return latest_dt
 
+def release_date_for_version(data: dict, version: str) -> Optional[dt.datetime]:
+    releases = data.get("releases") or {}
+    files = releases.get(version) or []
+    latest_dt = None
+    for f in files:
+        up = f.get("upload_time_iso_8601") or f.get("upload_time")
+        if not up:
+            continue
+        try:
+            up_dt = dt.datetime.fromisoformat(up.replace("Z", "+00:00"))
+        except Exception:
+            continue
+        if (latest_dt is None) or (up_dt > latest_dt):
+            latest_dt = up_dt
+    return latest_dt
+
 def releases_in_last_days(data: dict, days: int = 365) -> int:
     cutoff = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=days)
     releases = data.get("releases") or {}
     seen_versions = 0
-    for ver, files in releases.items():
+    for _, files in releases.items():
         latest_for_ver = None
         for f in files or []:
             up = f.get("upload_time_iso_8601") or f.get("upload_time")
@@ -212,13 +254,10 @@ def releases_in_last_days(data: dict, days: int = 365) -> int:
     return seen_versions
 
 def detect_license(info: dict) -> Tuple[bool, bool, str]:
-    # Return (has_license, looks_osi, raw)
     raw = (info.get("license") or "").strip()
     classifiers = info.get("classifiers") or []
     has = False
     looks_osi = False
-
-    # Classifiers are most reliable
     for c in classifiers:
         if c.startswith("License ::"):
             has = True
@@ -226,15 +265,12 @@ def detect_license(info: dict) -> Tuple[bool, bool, str]:
                 if hint in c:
                     looks_osi = True
                     break
-
     if not has and raw:
         has = True
-        # crude heuristic for OSI-ish
         for hint in OSI_LICENSE_HINTS + ["Apache", "MIT", "BSD", "GPL", "LGPL", "MPL", "ISC", "EPL"]:
             if hint.lower() in raw.lower():
                 looks_osi = True
                 break
-
     return has, looks_osi, raw or "unknown"
 
 def dev_status_score(info: dict) -> Tuple[float, str]:
@@ -242,13 +278,10 @@ def dev_status_score(info: dict) -> Tuple[float, str]:
     status_label = None
     for c in classifiers:
         if c.startswith("Development Status ::"):
-            # c like "Development Status :: 5 - Production/Stable"
-            parts = c.split("::")[-1].strip()
-            status_label = parts
+            status_label = c.split("::")[-1].strip()
             break
     if not status_label:
-        return 0.5, "Unknown"  # neutral-ish
-    # map
+        return 0.5, "Unknown"
     points = 0.5
     for key, val in DEV_STATUS_POINTS.items():
         if key in status_label:
@@ -258,11 +291,9 @@ def dev_status_score(info: dict) -> Tuple[float, str]:
 
 def readme_present(info: dict) -> bool:
     desc = info.get("description") or ""
-    # Description often contains the long README (reST/Markdown)
-    return len(desc.strip()) >= 200  # heuristic
+    return len(desc.strip()) >= 200
 
 def maintainer_present(info: dict) -> bool:
-    # PyPI JSON doesn’t list a maintainer roster; we use these hints
     fields = [
         info.get("maintainer"), info.get("maintainer_email"),
         info.get("author"), info.get("author_email"),
@@ -273,7 +304,6 @@ def project_urls_present(info: dict) -> bool:
     urls = info.get("project_urls") or {}
     if urls:
         return True
-    # Fallbacks
     return bool((info.get("home_page") or "").strip() or (info.get("project_url") or "").strip())
 
 def has_ci_badge(info: dict) -> bool:
@@ -284,26 +314,23 @@ def has_ci_badge(info: dict) -> bool:
             return True
     return False
 
-def wheel_presence(data: dict) -> Tuple[bool, bool, bool]:
-    """
-    Returns (has_any_wheel, has_manylinux_or_abi3, has_py3_wheel) for the latest version only.
-    """
+def wheel_presence_for_version(data: dict, version: Optional[str]) -> Tuple[bool, bool, bool]:
     info = data.get("info") or {}
-    version = info.get("version")
+    ver = version or info.get("version")
     releases = data.get("releases") or {}
-    files = releases.get(version) or []
+    files = releases.get(ver) or []
     has_wheel = False
     manylinux_or_abi3 = False
     py3_wheel = False
     for f in files:
-        fn = f.get("filename") or ""
+        fn = (f.get("filename") or "")
         packagetype = f.get("packagetype")
         if packagetype == "bdist_wheel" or fn.endswith(".whl"):
             has_wheel = True
-            # simple hints
-            if "manylinux" in fn.lower() or "abi3" in fn.lower():
+            fl = fn.lower()
+            if "manylinux" in fl or "abi3" in fl:
                 manylinux_or_abi3 = True
-            if "py3" in fn.lower() or "cp3" in fn.lower():
+            if "py3" in fl or "cp3" in fl:
                 py3_wheel = True
     return has_wheel, manylinux_or_abi3, py3_wheel
 
@@ -311,13 +338,10 @@ def dependency_count(info: dict) -> int:
     reqs = info.get("requires_dist") or []
     return len(reqs)
 
-def osv_vulnerability_count(sess: requests.Session, package: str) -> Optional[int]:
-    payload = {
-        "package": {
-            "name": package,
-            "ecosystem": "PyPI",
-        }
-    }
+def osv_vulnerability_count(sess: requests.Session, package: str, version: Optional[str]) -> Optional[int]:
+    payload = {"package": {"name": package, "ecosystem": "PyPI"}}
+    if version:
+        payload["version"] = version
     data = get_json(sess, OSV_QUERY_URL, method="POST", payload=payload)
     if not data:
         return None
@@ -327,42 +351,52 @@ def osv_vulnerability_count(sess: requests.Session, package: str) -> Optional[in
 def clamp(v: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, v))
 
-def score_package(sess: requests.Session, name: str, include_osv: bool = True) -> Dict[str, Any]:
-    meta = fetch_pypi_metadata(sess, name)
-    if not meta:
-        return {
-            "package": name,
-            "collected_at": dt.datetime.utcnow().isoformat() + "Z",
-            "error": "Package not found or PyPI unreachable."
-        }
+def risk_tuple_from_percent(risk_percent: float) -> Tuple[str, str, int]:
+    for threshold, tup in RISK_THRESHOLDS_INVERTED:
+        if risk_percent <= threshold:
+            return tup
+    return ("Critical", "[CRITICAL]", 5)
 
+# ---------- Scoring ----------
+
+def score_one(meta: dict, include_osv: bool, sess: requests.Session, name: str, exact_version: Optional[str]) -> Dict[str, Any]:
     info = meta.get("info") or {}
     metrics: List[Metric] = []
 
-    # 1) Recency of latest release
-    latest_dt = parse_latest_release_date(meta)
-    if latest_dt:
-        days = (dt.datetime.now(dt.timezone.utc) - latest_dt).days
-        # 0 days -> full points; 365+ -> near 0
-        recency_factor = clamp(1 - days / 365.0, 0, 1)
-        score = recency_factor * WEIGHTS["recent_release"]
-        comment = f"Last release {days} days ago ({latest_dt.date().isoformat()})."
+    # Recency: if version pinned, use that version's upload date; else latest across all.
+    if exact_version:
+        vdt = release_date_for_version(meta, exact_version)
+        if vdt:
+            days = (dt.datetime.now(dt.timezone.utc) - vdt).days
+            recency_factor = clamp(1 - days / 365.0, 0, 1)
+            score = recency_factor * WEIGHTS["recent_release"]
+            comment = f"Version {exact_version} released {days} days ago ({vdt.date().isoformat()})."
+        else:
+            days = None
+            score = 0
+            comment = f"Version {exact_version} not found in releases."
     else:
-        score = 0
-        comment = "No release date found."
-        days = None
+        latest_dt = parse_latest_release_date(meta)
+        if latest_dt:
+            days = (dt.datetime.now(dt.timezone.utc) - latest_dt).days
+            recency_factor = clamp(1 - days / 365.0, 0, 1)
+            score = recency_factor * WEIGHTS["recent_release"]
+            comment = f"Last release {days} days ago ({latest_dt.date().isoformat()})."
+        else:
+            score = 0
+            comment = "No release date found."
+            days = None
+
     metrics.append(Metric("recent_release", days if days is not None else "unknown",
                           WEIGHTS["recent_release"], round(score, 2), comment))
 
-    # 2) Release cadence (versions in last year)
+    # Cadence still based on the project overall (not just one pinned version)
     rels_year = releases_in_last_days(meta, 365)
-    # 0 -> 0, >=6 -> full points (tweak)
     cadence_factor = clamp(rels_year / 6.0, 0, 1)
     metrics.append(Metric("release_cadence_last_365d", rels_year, WEIGHTS["release_cadence"],
                           round(cadence_factor * WEIGHTS["release_cadence"], 2),
                           f"{rels_year} release(s) in the last 365 days."))
 
-    # 3) License & OSI-ish license
     has_lic, looks_osi, raw_lic = detect_license(info)
     metrics.append(Metric("license_present", raw_lic, WEIGHTS["has_license"],
                           WEIGHTS["has_license"] if has_lic else 0,
@@ -371,35 +405,33 @@ def score_package(sess: requests.Session, name: str, include_osv: bool = True) -
                           WEIGHTS["license_osi_approved"] if looks_osi else 0,
                           "OSI-style license suggested by classifiers/text." if looks_osi else "License may not be OSI-approved or is unclear."))
 
-    # 4) Requires-Python pin
     rp = info.get("requires_python")
     metrics.append(Metric("requires_python_present", rp or "none", WEIGHTS["has_requires_python"],
                           WEIGHTS["has_requires_python"] if rp else 0,
                           "Requires-Python specified." if rp else "No Python version constraint specified."))
 
-    # 5) Development status
     dev_pts, dev_label = dev_status_score(info)
     metrics.append(Metric("development_status", dev_label, WEIGHTS["dev_status"],
                           round(dev_pts * WEIGHTS["dev_status"], 2),
                           f"Classifier indicates: {dev_label}."))
 
-    # 6) README/long description presence
     has_md = readme_present(info)
     metrics.append(Metric("readme_present", has_md, WEIGHTS["has_readme"],
                           WEIGHTS["has_readme"] if has_md else 0,
                           "Project has a substantial long description." if has_md else "Long description appears thin or missing."))
 
-    # 7) Maintainer/author presence (bus factor hint)
     maint_ok = maintainer_present(info)
     metrics.append(Metric("maintainer_present", maint_ok, WEIGHTS["maintainer_present"],
                           WEIGHTS["maintainer_present"] if maint_ok else 0,
                           "Maintainer/author metadata present." if maint_ok else "Maintainer/author fields missing."))
 
-    # 8) Wheels presence
-    has_wheel, has_manylinux_or_abi3, has_py3 = wheel_presence(meta)
-    metrics.append(Metric("latest_has_wheel", has_wheel, WEIGHTS["wheels_present"],
+    has_wheel, has_manylinux_or_abi3, has_py3 = wheel_presence_for_version(meta, exact_version)
+    metrics.append(Metric("latest_has_wheel" if not exact_version else "pinned_has_wheel",
+                          has_wheel, WEIGHTS["wheels_present"],
                           WEIGHTS["wheels_present"] if has_wheel else 0,
-                          "Wheel available for latest version." if has_wheel else "Latest version appears sdist-only."))
+                          ("Wheel available for evaluated version." if exact_version else "Wheel available for latest version.")
+                          if has_wheel else
+                          ("Evaluated version appears sdist-only." if exact_version else "Latest version appears sdist-only.")))
     metrics.append(Metric("manylinux_or_abi3", has_manylinux_or_abi3, WEIGHTS["manylinux_or_abi3"],
                           WEIGHTS["manylinux_or_abi3"] if has_manylinux_or_abi3 else 0,
                           "Wheel suggests manylinux/abi3 compatibility." if has_manylinux_or_abi3 else "No manylinux/abi3 hint detected."))
@@ -407,21 +439,17 @@ def score_package(sess: requests.Session, name: str, include_osv: bool = True) -
                           WEIGHTS["py3_wheel"] if has_py3 else 0,
                           "Python 3 wheel present." if has_py3 else "No explicit py3 wheel tag detected."))
 
-    # 9) Project URLs
     urls_ok = project_urls_present(info)
     metrics.append(Metric("project_urls_present", urls_ok, WEIGHTS["project_urls"],
                           WEIGHTS["project_urls"] if urls_ok else 0,
                           "Project URLs available (homepage/repo/docs)." if urls_ok else "No project URLs declared."))
 
-    # 10) CI badge hint
     ci_hint = has_ci_badge(info)
     metrics.append(Metric("ci_badge_hint", ci_hint, WEIGHTS["ci_badge_hint"],
                           WEIGHTS["ci_badge_hint"] if ci_hint else 0,
                           "CI or quality badges referenced." if ci_hint else "No CI/quality badge hints found."))
 
-    # 11) Dependency count (reward moderate counts, penalize extremes)
     dep_cnt = dependency_count(info)
-    # Heuristic: sweet spot 0-25; clamp beyond 50
     if dep_cnt == 0:
         dep_factor = 0.8
         dep_comment = "No declared runtime dependencies."
@@ -437,16 +465,14 @@ def score_package(sess: requests.Session, name: str, include_osv: bool = True) -
     metrics.append(Metric("dependency_count_reasonable", dep_cnt, WEIGHTS["dep_count_reasonable"],
                           round(dep_factor * WEIGHTS["dep_count_reasonable"], 2), dep_comment))
 
-    # 12) OSV known vulnerabilities (optional)
     osv_count = None
     if include_osv:
-        osv_count = osv_vulnerability_count(sess, name)
+        osv_count = osv_vulnerability_count(sess, name, exact_version)
     if include_osv and osv_count is not None:
         if osv_count == 0:
             osv_score = WEIGHTS["vulns_known_none"]
             osv_comment = "No known OSV vulnerabilities."
         else:
-            # Linear penalty: 0 when >= 5 vulns
             osv_factor = clamp(1 - (osv_count / 5.0), 0, 1)
             osv_score = round(osv_factor * WEIGHTS["vulns_known_none"], 2)
             osv_comment = f"{osv_count} known OSV vulnerability(ies) found."
@@ -455,16 +481,23 @@ def score_package(sess: requests.Session, name: str, include_osv: bool = True) -
         metrics.append(Metric("vulnerabilities_known_osv", "skipped", WEIGHTS["vulns_known_none"], 0,
                               "OSV check skipped or unavailable."))
 
-    # Aggregate
-    score_total = round(sum(m.score for m in metrics), 2)
+    # Aggregate -> percent
+    score_total_good = round(sum(m.score for m in metrics), 2)
     score_max = sum(m.weight for m in metrics)
-    percent = round((score_total / score_max) * 100, 1) if score_max else 0.0
-    risk = next(label for thresh, label in RISK_THRESHOLDS if percent >= thresh)
+    health_percent = round((score_total_good / score_max) * 100, 1) if score_max else 0.0
+    risk_percent = round(100.0 - health_percent, 1)
+    risk_label, risk_display, risk_rank = risk_tuple_from_percent(risk_percent)
 
-    # Helpful high-level comments
+    # Highlights
     highlights = []
-    if latest_dt:
-        if (dt.datetime.now(dt.timezone.utc) - latest_dt).days <= 120:
+    # recency highlight based on evaluated target
+    if exact_version:
+        vdt = release_date_for_version(meta, exact_version)
+        if vdt and (dt.datetime.now(dt.timezone.utc) - vdt).days <= 120:
+            highlights.append(f"{name}=={exact_version} released in the last 4 months.")
+    else:
+        latest_dt = parse_latest_release_date(meta)
+        if latest_dt and (dt.datetime.now(dt.timezone.utc) - latest_dt).days <= 120:
             highlights.append("Active releases in the last 4 months.")
     if has_wheel and has_py3:
         highlights.append("Pre-built Python 3 wheels available.")
@@ -479,20 +512,25 @@ def score_package(sess: requests.Session, name: str, include_osv: bool = True) -
     if include_osv and (osv_count not in (None, 0)):
         highlights.append("Known vulnerabilities present—investigate advisories.")
 
+    evaluated_version = exact_version or info.get("version")
+
     return {
         "package": name,
-        # timezone aware ISO8601
-        "collected_at": dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z"),
-        "score_total": score_total,
+        "requested": {"raw": None, "exact_version": exact_version} if exact_version else {"raw": None, "exact_version": None},
+        "collected_at": dt.datetime.utcnow().isoformat() + "Z",
+        "score_total_good": score_total_good,
         "score_max": score_max,
-        "score_percent": percent,
-        "risk_level": risk,           # legacy naming (inverse risk)
-        "trust_level": trust_level(percent),  # aligned with docker audit semantics
-        "percentage": percent,        # alias for docker style key
+        "health_percent": health_percent,
+        "risk_percent": risk_percent,
+        "score_percent": risk_percent,
+        "risk_level": risk_label,
+        "risk_level_display": risk_display,
+        "risk_level_rank": risk_rank,
         "info": {
             "name": info.get("name"),
             "summary": info.get("summary"),
-            "version": info.get("version"),
+            "version_latest": info.get("version"),
+            "evaluated_version": evaluated_version,
             "home_page": info.get("home_page"),
             "project_urls": info.get("project_urls"),
         },
@@ -500,106 +538,185 @@ def score_package(sess: requests.Session, name: str, include_osv: bool = True) -
         "highlights": highlights,
     }
 
+# ---------- I/O ----------
+
+def print_tldr(results: List[Dict[str, Any]], fail_above: Optional[float], fail_below: Optional[float]) -> None:
+    print("\n=== PyPI Audit TL;DR (Inverted: lower is better) ===")
+    if fail_above is not None:
+        print(f"Quality gate A: FAIL if RISK % > {fail_above}")
+    if fail_below is not None:
+        print(f"Quality gate B (legacy): FAIL if HEALTH % < {fail_below}")
+    if fail_above is not None or fail_below is not None:
+        print()
+    for r in results:
+        name = r.get("package")
+        info = r.get("info") or {}
+        evaluated_version = (info or {}).get("evaluated_version") or "unknown"
+        if "error" in r:
+            print(f"[ERROR] - {name}: {r['error']}\n")
+            continue
+        risk_display = r.get("risk_level_display", "[UNKNOWN]")
+        risk_percent = r.get("risk_percent")
+        health_percent = r.get("health_percent")
+        total_good = r.get("score_total_good")
+        smax = r.get("score_max")
+        print(f"{risk_display} {name} @ {evaluated_version}: RISK {risk_percent}% (Health {health_percent}%)  GoodPoints {total_good}/{smax}")
+        for m in r.get("metrics", []):
+            print(f"    • {m['name']}: {m['score']}/{m['weight']} – {m['comment']}")
+        highs = r.get("highlights") or []
+        if highs:
+            print("    Highlights: " + " | ".join(highs))
+        print()
+
+def default_out_path(pkgs: List[str]) -> str:
+    if len(pkgs) == 1:
+        safe = re.sub(r"[^A-Za-z0-9._-]+", "_", pkgs[0])
+        return f"{safe}_pypi_audit.json"
+    ts = dt.datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    return f"pypi_audit_{ts}.json"
+
+def write_json_file(path: str, payload: Any, pretty: bool) -> None:
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            if pretty:
+                json.dump(payload, f, indent=2, ensure_ascii=False)
+            else:
+                json.dump(payload, f, ensure_ascii=False)
+    except OSError as e:
+        print(f"ERROR: failed to write JSON to '{path}': {e}", file=sys.stderr)
+        sys.exit(1)
+
+def read_packages_from_file(path: str) -> List[str]:
+    """Read a file and return package specs split by newline, spaces, or commas."""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            text = f.read()
+    except OSError as e:
+        print(f"ERROR: failed to read package file '{path}': {e}", file=sys.stderr)
+        sys.exit(1)
+    parts = re.split(r"[\s,]+", text.strip())
+    return [p for p in parts if p]
+
+# ---------- Main ----------
+
 def main():
-    parser = argparse.ArgumentParser(
-        description="Audit PyPI packages for trust & risk signals (Docker-style scoring)."
-    )
-    parser.add_argument("packages", nargs="+", help="One or more PyPI package names.")
-    parser.add_argument("--pretty", action="store_true", help="Pretty-print JSON output.")
-    parser.add_argument("--json", action="store_true", help="Write only to pypi_audit.json (suppress console summary).")
-    parser.add_argument("--score-details", action="store_true", help="Include per-metric breakdown in top-level output (always stored internally).")
+    parser = argparse.ArgumentParser(description="Audit PyPI packages for trust & risk signals (inverted scoring).")
+    parser.add_argument("packages", nargs="*", help="One or more PyPI package names (optional specifiers, e.g., name==1.2.3).")
+    parser.add_argument("--file", type=str, help="Read package names from a file (newline/space/comma-separated).")
+    parser.add_argument("--pretty", action="store_true", help="Pretty-print JSON (file and --stdout-json).")
     parser.add_argument("--timeout", type=int, default=15, help="HTTP timeout in seconds (default: 15).")
     parser.add_argument("--no-osv", action="store_true", help="Skip OSV vulnerability check.")
-    parser.add_argument("--fail-below", type=float, metavar="SCORE", help="Exit 1 if any package score < SCORE (0-100).")
-    parser.add_argument("--exit-risk-code", action="store_true", help="Exit with code based on WORST package trust level (Critical=0, High=1, Medium=2, Low=3, Very Low=4, Error=10).")
+
+    # Gates:
+    parser.add_argument("--fail-above", type=float, default=None,
+                        help="Fail (exit 2) if any RISK percent is above this threshold (0-100).")
+    parser.add_argument("--fail-below", type=float, default=None,
+                        help="[LEGACY] Fail (exit 2) if any HEALTH percent is below this threshold (0-100).")
+
+    parser.add_argument("--out", type=str, default=None, help="Path to write JSON report. Default depends on package count.")
+    parser.add_argument("--no-tldr", action="store_true", help="Do not print the TL;DR breakdown.")
+    parser.add_argument("--stdout-json", action="store_true", help="Also print the JSON payload to stdout.")
     args = parser.parse_args()
 
+    # Build package list from CLI + optional file
+    raw_specs: List[str] = list(args.packages) if args.packages else []
+    if args.file:
+        raw_specs.extend(read_packages_from_file(args.file))
+
+    if not raw_specs:
+        print("No packages specified. Provide package names or use --file <path>.", file=sys.stderr)
+        sys.exit(1)
+
+    # Parse specs into (name, exact_version_or_None)
+    to_audit: List[Tuple[str, Optional[str], str]] = []  # (name, exact_ver, original_spec)
+    for spec in raw_specs:
+        name, exact_ver = parse_name_and_exact_version(spec)
+        to_audit.append((name, exact_ver, spec))
+
+    # Validate thresholds
+    def valid_pct(x):
+        return x is None or (0 <= x <= 100)
+    if not valid_pct(args.fail_above) or not valid_pct(args.fail_below):
+        print("Thresholds must be between 0 and 100.", file=sys.stderr)
+        sys.exit(1)
+    if args.fail_below is not None and args.fail_above is None:
+        print("NOTE: --fail-below applies to HEALTH percent (higher is better). "
+              "Prefer --fail-above, which applies to RISK percent (higher is worse).", file=sys.stderr)
+
     sess = make_session(timeout=args.timeout)
-    results = []
-    fail_hits = []
-    for pkg in args.packages:
-        res = score_package(sess, pkg, include_osv=not args.no_osv)
-        results.append(res)
-        if args.fail_below is not None and res.get("score_percent", 0) < args.fail_below:
-            fail_hits.append(pkg)
+    results: List[Dict[str, Any]] = []
+    had_operational_error = False
+    gate_failed = False
 
-    # Prepare output payload
-    payload = results if len(results) > 1 else results[0]
-    if not args.score_details:
-        # For brevity, remove raw metrics if user didn't request details (still in file if --score-details)
-        if isinstance(payload, dict):
-            payload_no_metrics = dict(payload)
-            payload_no_metrics.pop("metrics", None)
-            payload = payload_no_metrics
-        else:  # list
-            trimmed = []
-            for item in payload:
-                c = dict(item)
-                c.pop("metrics", None)
-                trimmed.append(c)
-            payload = trimmed
+    for name, exact_ver, original in to_audit:
+        meta = fetch_pypi_metadata(sess, name)
+        if not meta:
+            results.append({
+                "package": name,
+                "requested": {"raw": original, "exact_version": exact_ver},
+                "collected_at": dt.datetime.utcnow().isoformat() + "Z",
+                "error": "Package not found or PyPI unreachable."
+            })
+            had_operational_error = True
+            continue
 
-    # Console output
-    if not args.json:
-        if isinstance(results, list):
-            # Summary line for each
-            for r in results:
-                print(f"Package: {r['package']} | Trust: {r['trust_level']} | Score: {r['score_percent']}%")
+        # If an exact version was requested but is not in releases, return a specific error.
+        if exact_ver and exact_ver not in (meta.get("releases") or {}):
+            results.append({
+                "package": name,
+                "requested": {"raw": original, "exact_version": exact_ver},
+                "collected_at": dt.datetime.utcnow().isoformat() + "Z",
+                "error": f"Version '{exact_ver}' not found for package '{name}'."
+            })
+            had_operational_error = True
+            continue
+
+        scored = score_one(meta, include_osv=not args.no_osv, sess=sess, name=name, exact_version=exact_ver)
+        # attach the original spec
+        if "requested" in scored:
+            scored["requested"]["raw"] = original
         else:
-            r = results[0]
-            print(f"Package: {r['package']} | Trust: {r['trust_level']} | Score: {r['score_percent']}%")
-        print()
+            scored["requested"] = {"raw": original, "exact_version": exact_ver}
+        results.append(scored)
+
+    # Apply gates (prefer fail-above if present)
+    if not had_operational_error:
+        if args.fail_above is not None:
+            for r in results:
+                rp = r.get("risk_percent")
+                if rp is None or rp > args.fail_above:
+                    gate_failed = True
+                    break
+        elif args.fail_below is not None:
+            for r in results:
+                hp = r.get("health_percent")
+                if hp is None or hp < args.fail_below:
+                    gate_failed = True
+                    break
+
+    # Write JSON report
+    out_path = args.out or default_out_path([s for s in (spec for _, _, spec in to_audit)])
+    payload = results if len(results) > 1 else results[0]
+    write_json_file(out_path, payload, pretty=args.pretty)
+
+    # Optional echo of JSON
+    if args.stdout_json:
         if args.pretty:
             print(json.dumps(payload, indent=2, ensure_ascii=False))
         else:
             print(json.dumps(payload, ensure_ascii=False))
 
-    # Write file (always full results including metrics regardless of --score-details)
-    try:
-        with open("pypi_audit.json", "w", encoding="utf-8") as f:
-            json.dump(results if len(results) > 1 else results[0], f, indent=2, ensure_ascii=False)
-        if not args.json:
-            print("\n✅ Results written to pypi_audit.json")
-    except Exception as e:
-        if not args.json:
-            print(f"\n❌ Failed to write pypi_audit.json: {e}")
+    # TL;DR
+    if not args.no_tldr:
+        print_tldr(results, args.fail_above, args.fail_below)
+        print(f"JSON report written to: {os.path.abspath(out_path)}")
 
-    # Fail-below logic
-    if args.fail_below is not None:
-        if fail_hits:
-            if not args.json:
-                print(f"\n❌ Packages below threshold {args.fail_below}: {', '.join(fail_hits)}")
-            sys.exit(1)
-        else:
-            if not args.json:
-                print(f"\n✅ All packages meet threshold {args.fail_below}.")
-            sys.exit(0)
-
-    # Exit code mapping (only if --exit-risk-code and fail-below not triggered)
-    if args.exit_risk_code:
-        level_to_code = {
-            # Here 'Critical' means highest trust (>=90) per this script's naming convention
-            "Critical": 0,
-            "High": 1,
-            "Medium": 2,
-            "Low": 3,
-            "Very Low": 4,
-        }
-        # Determine worst (highest numeric code) across all packages
-        worst_code = -1
-        worst_level = None
-        worst_pkg = None
-        for r in results:
-            lvl = r.get("trust_level")
-            code = level_to_code.get(lvl, 10)
-            if code > worst_code:
-                worst_code = code
-                worst_level = lvl
-                worst_pkg = r.get("package")
-        if not args.json:
-            print(f"\nℹ️  Exiting with code {worst_code} (worst package: {worst_pkg} trust level: {worst_level}).")
-        # Use 10 for unexpected/unknown trust level or error
-        sys.exit(worst_code if worst_code >= 0 else 10)
+    # Exit codes
+    if had_operational_error:
+        sys.exit(1)
+    if gate_failed:
+        sys.exit(2)
+    sys.exit(0)
 
 if __name__ == "__main__":
     main()
