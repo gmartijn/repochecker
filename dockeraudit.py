@@ -11,7 +11,7 @@ HTTP_TIMEOUT = 15  # seconds
 
 
 # ┌─────────────────────────────────────────────────────────────────────────────┐
-# │                        Docker Audit Script                                  │
+# │                        Docker Audit Scssssript                                  │
 # │                                                                             │
 # │  Note: This script evaluates Docker images based on various criteria,       │
 # │  including activity, license, and security policies.                        │
