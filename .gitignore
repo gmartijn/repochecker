@@ -4,3 +4,5 @@ docker_audit.json
 repochecker.code-workspace
 *.json
 output.txt
+report.csv
+*.xlsx
