@@ -7,7 +7,7 @@ Generate a CSV and/or Excel report from one or more pypi_audit JSON outputs.
 
 - Robust JSON ingestion: single object, list of objects, {"results":[...]}, JSON Lines,
   or multiple concatenated top-level JSON values.
-- Columns: package, score_total_good, health_percent, risk_level, indicators
+- Columns: package, score_total_good, health_percent, risk_level, recent_release, dependency_count, indicators
   (indicators = semicolon-joined "highlights" from the audit JSON).
 - Excel export (optional): adds header styling, autofilter, frozen header,
   and risk-level color coding:
@@ -40,10 +40,10 @@ def _try_import_openpyxl():
         import openpyxl
         from openpyxl.styles import PatternFill, Font, Alignment
         return openpyxl, PatternFill, Font, Alignment
-    except Exception as e:
+    except Exception:
         return None, None, None, None
 
-HEADER = ["package", "score_total_good", "health_percent", "risk_level", "indicators"]
+HEADER = ["package", "score_total_good", "health_percent", "risk_level", "recent_release", "dependency_count", "indicators"]
 
 def parse_any_json_stream(text: str) -> List[Any]:
     """
@@ -119,6 +119,30 @@ def flatten_results(val: Any) -> Iterable[Dict[str, Any]]:
             if isinstance(item, dict):
                 yield item
 
+def _get_recent_release_value(rec: Dict[str, Any]) -> Any:
+    """
+    Extract 'recent_release' metric value from a record's metrics list.
+    Returns 'unknown' if the metric is missing.
+    """
+    metrics = rec.get("metrics")
+    if isinstance(metrics, list):
+        for m in metrics:
+            if isinstance(m, dict) and m.get("name") == "recent_release":
+                return m.get("value", "unknown")
+    return "unknown"
+
+def _get_dependency_count(rec: Dict[str, Any]) -> Any:
+    """
+    Extract the raw dependency count from 'dependency_count_reasonable' metric's value.
+    Returns '' (empty) if not available.
+    """
+    metrics = rec.get("metrics")
+    if isinstance(metrics, list):
+        for m in metrics:
+            if isinstance(m, dict) and m.get("name") == "dependency_count_reasonable":
+                return m.get("value", "")
+    return ""
+
 def extract_row(rec: Dict[str, Any]) -> Optional[List[Any]]:
     """
     Map a single audit record to CSV/Excel row.
@@ -130,9 +154,11 @@ def extract_row(rec: Dict[str, Any]) -> Optional[List[Any]]:
     score_total_good = rec.get("score_total_good")
     health_percent = rec.get("health_percent")
     risk_level = rec.get("risk_level")
+    recent_release = _get_recent_release_value(rec)
+    dependency_count = _get_dependency_count(rec)
     highlights = rec.get("highlights") or []
     indicators = "; ".join(h for h in highlights if isinstance(h, str))
-    return [package, score_total_good, health_percent, risk_level, indicators]
+    return [package, score_total_good, health_percent, risk_level, recent_release, dependency_count, indicators]
 
 def collect_rows_from_text(text: str) -> List[List[Any]]:
     rows: List[List[Any]] = []
@@ -191,10 +217,9 @@ def write_excel(path: str, rows: List[List[Any]]) -> None:
     ws.auto_filter.ref = ws.dimensions
 
     # Risk-level coloring on the "risk_level" column (4th column)
-    # Colors chosen to be readable on white background
     fills = {
         "Critical": PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid"),  # light red
-        "High":     PatternFill(start_color="FFEB9C", end_color="FFBB66", fill_type="solid"),  # orange-ish (approx)
+        "High":     PatternFill(start_color="FFCC99", end_color="FFCC99", fill_type="solid"),  # orange
         "Medium":   PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid"),  # light yellow
         "Low":      PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid"),  # light green
         "Very Low": PatternFill(start_color="C6D9F1", end_color="C6D9F1", fill_type="solid"),  # light blue
@@ -202,21 +227,21 @@ def write_excel(path: str, rows: List[List[Any]]) -> None:
     risk_col = 4
     for r in range(2, ws.max_row + 1):
         cell = ws.cell(row=r, column=risk_col)
-        val = (cell.value or "").strip()
+        val = cell.value
+        label = str(val).strip() if val is not None else ""
         fill = None
         # Normalize common variants
-        if isinstance(val, str):
-            low_val = val.lower()
-            if low_val == "critical":
-                fill = fills["Critical"]
-            elif low_val == "high":
-                fill = fills["High"]
-            elif low_val == "medium":
-                fill = fills["Medium"]
-            elif low_val == "low":
-                fill = fills["Low"]
-            elif low_val in ("very low", "very_low", "very-low"):
-                fill = fills["Very Low"]
+        low_val = label.lower()
+        if low_val == "critical":
+            fill = fills["Critical"]
+        elif low_val == "high":
+            fill = fills["High"]
+        elif low_val == "medium":
+            fill = fills["Medium"]
+        elif low_val == "low":
+            fill = fills["Low"]
+        elif low_val in ("very low", "very_low", "very-low"):
+            fill = fills["Very Low"]
         if fill is not None:
             cell.fill = fill
 
