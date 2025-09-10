@@ -13,6 +13,7 @@ Usage:
     [--out report.json]
     [--no-tldr]
     [--stdout-json]
+    [--skipssl]                           # INSECURE: disable SSL certificate verification
 
 Notes:
 - Package arguments may include version pins, e.g. `requests==2.31.0` or `packaging==16.8`.
@@ -156,7 +157,10 @@ class Metric:
 
 # ---------- Networking ----------
 
-def make_session(timeout: int) -> requests.Session:
+def make_session(timeout: int, verify_ssl: bool = True) -> requests.Session:
+    """
+    Create a requests session with retries and default timeout/SSL verification applied.
+    """
     sess = requests.Session()
     retries = Retry(
         total=3,
@@ -168,12 +172,14 @@ def make_session(timeout: int) -> requests.Session:
     adapter = HTTPAdapter(max_retries=retries)
     sess.mount("https://", adapter)
     sess.mount("http://", adapter)
-    sess.request = _timeout_request_wrapper(sess.request, timeout)
+    # Install wrapper that ensures a default timeout and SSL verification flag
+    sess.request = _timeout_request_wrapper(sess.request, timeout, verify_ssl)
     return sess
 
-def _timeout_request_wrapper(func, timeout: int):
+def _timeout_request_wrapper(func, timeout: int, verify_ssl: bool):
     def wrapped(method, url, **kwargs):
         kwargs.setdefault("timeout", timeout)
+        kwargs.setdefault("verify", verify_ssl)
         return func(method, url, **kwargs)
     return wrapped
 
@@ -604,7 +610,8 @@ def main():
     parser.add_argument("--pretty", action="store_true", help="Pretty-print JSON (file and --stdout-json).")
     parser.add_argument("--timeout", type=int, default=15, help="HTTP timeout in seconds (default: 15).")
     parser.add_argument("--no-osv", action="store_true", help="Skip OSV vulnerability check.")
-
+    parser.add_argument("--skipssl", action="store_true",
+                        help="Disable SSL certificate verification for HTTP requests (INSECURE).")
     # Gates:
     parser.add_argument("--fail-above", type=float, default=None,
                         help="Fail (exit 2) if any RISK percent is above this threshold (0-100).")
@@ -641,7 +648,11 @@ def main():
         print("NOTE: --fail-below applies to HEALTH percent (higher is better). "
               "Prefer --fail-above, which applies to RISK percent (higher is worse).", file=sys.stderr)
 
-    sess = make_session(timeout=args.timeout)
+    if args.skipssl:
+        print("WARNING: --skipssl disables SSL certificate verification. This is insecure and susceptible to MITM attacks.",
+              file=sys.stderr)
+
+    sess = make_session(timeout=args.timeout, verify_ssl=not args.skipssl)
     results: List[Dict[str, Any]] = []
     had_operational_error = False
     gate_failed = False
