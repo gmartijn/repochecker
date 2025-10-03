@@ -1,11 +1,27 @@
 #!/usr/bin/env python3
 """
-NuGet/C# package security audit:
+NuGet/C# package security audit (enhanced):
 - Queries OSV.dev for known vulnerabilities (ecosystem=NuGet).
-- Pulls NuGet metadata (downloads, latest publish, license, repo URL).
+- Pulls NuGet metadata (downloads, latest publish, license, repo URL) with robust page hydration.
 - Optionally augments with GitHub repo signals (stars, push activity) if a repo URL exists.
-- Computes a weighted risk score.
-- Generates a PDF report with a summary page and a bar chart (x-axis labels not clipped).
+- Computes a weighted risk score (vulns, freshness, popularity, repo posture, license).
+- Popularity mapping: 1e3 -> 0, 1e7 -> 100 (log scale, clamped)
+- Freshness reflects the *effective* version's publish date, not just latest.
+- Generates a PDF report with a summary page and a bar chart (x-axis labels not clipped), plus vuln table.
+- CLI niceties: sensible help if no subcommand; --no-github; --osv-only (list vulns only, skip scoring/PDF).
+
+Usage examples:
+  # Audit a single package, JSON only
+  python nuget_security_audit_enhanced.py package --name Newtonsoft.Json --json
+
+  # Audit a single package and write a PDF
+  python nuget_security_audit_enhanced.py package --name Serilog --pdf serilog_audit.pdf
+
+  # Audit a lockfile and write a PDF table of top results
+  python nuget_security_audit_enhanced.py lockfile --path path/to/packages.lock.json --pdf audit.pdf
+
+  # List auditable packages from a lockfile
+  python nuget_security_audit_enhanced.py --list --path path/to/packages.lock.json
 """
 
 import os
@@ -16,7 +32,7 @@ import math
 import time
 import argparse
 import datetime as dt
-from typing import Optional, Dict, Any, List, Tuple
+from typing import Optional, Dict, Any, List, Tuple, Iterable
 
 try:
     import requests
@@ -43,38 +59,83 @@ OSV_QUERY = "https://api.osv.dev/v1/query"
 
 SESSION = requests.Session()
 SESSION.headers.update({
-    "User-Agent": "nuget-security-audit/1.0",
+    "User-Agent": "nuget-security-audit/1.1",
     "Accept": "application/json",
 })
 DEFAULT_TIMEOUT = 20
 
 
+# ------------------------ HTTP helpers with backoff ------------------------ #
+
 def _get(url: str, *, params=None, headers=None, timeout=DEFAULT_TIMEOUT) -> Optional[dict]:
-    try:
-        r = SESSION.get(url, params=params, headers=headers, timeout=timeout)
-        if r.status_code == 429:
-            # backoff a little
-            time.sleep(1.0)
-            r = SESSION.get(url, params=params, headers=headers, timeout=timeout)
-        r.raise_for_status()
-        if "application/json" in (r.headers.get("Content-Type") or ""):
-            return r.json()
+    last_exception = None
+    for attempt in range(3):
         try:
-            return r.json()
-        except Exception:
+            r = SESSION.get(url, params=params, headers=headers, timeout=timeout)
+            if r.status_code in (429, 503):
+                ra = r.headers.get("Retry-After")
+                try:
+                    delay = float(ra) if ra and str(ra).isdigit() else (1.5 * (attempt + 1))
+                except Exception:
+                    delay = 1.5 * (attempt + 1)
+                time.sleep(delay)
+                continue
+            r.raise_for_status()
+            # Best-effort JSON parse regardless of content-type
+            try:
+                return r.json()
+            except Exception:
+                return None
+        except requests.HTTPError as e:
+            last_exception = e
+            if r.status_code in (429, 500, 502, 503, 504) and attempt < 2:
+                time.sleep(1.2 * (attempt + 1))
+                continue
             return None
-    except Exception:
+        except Exception as e:
+            last_exception = e
+            if attempt < 2:
+                time.sleep(0.5 * (attempt + 1))
+                continue
+            return None
+    if last_exception:
         return None
+    return None
 
 
 def _post(url: str, *, json_body=None, headers=None, timeout=DEFAULT_TIMEOUT) -> Optional[dict]:
-    try:
-        r = SESSION.post(url, json=json_body, headers=headers, timeout=timeout)
-        r.raise_for_status()
-        return r.json()
-    except Exception:
+    last_exception = None
+    for attempt in range(3):
+        try:
+            r = SESSION.post(url, json=json_body, headers=headers, timeout=timeout)
+            if r.status_code in (429, 503):
+                ra = r.headers.get("Retry-After")
+                try:
+                    delay = float(ra) if ra and str(ra).isdigit() else (1.5 * (attempt + 1))
+                except Exception:
+                    delay = 1.5 * (attempt + 1)
+                time.sleep(delay)
+                continue
+            r.raise_for_status()
+            return r.json()
+        except requests.HTTPError as e:
+            last_exception = e
+            if r.status_code in (429, 500, 502, 503, 504) and attempt < 2:
+                time.sleep(1.2 * (attempt + 1))
+                continue
+            return None
+        except Exception as e:
+            last_exception = e
+            if attempt < 2:
+                time.sleep(0.5 * (attempt + 1))
+                continue
+            return None
+    if last_exception:
         return None
+    return None
 
+
+# ------------------------ OSV ------------------------ #
 
 def query_osv_vulns(package: str, version: Optional[str] = None) -> List[dict]:
     body = {"package": {"name": package, "ecosystem": "NuGet"}}
@@ -93,12 +154,11 @@ def _max_cvss(v: dict) -> Optional[float]:
     scores = []
     for s in v.get("severity") or []:
         try:
-            if s.get("type", "").upper() == "CVSS_V3":
+            if (s.get("type") or "").upper() in ("CVSS_V3", "CVSS_V3.1", "CVSS_V4"):
                 scores.append(float(s.get("score")))
         except Exception:
             pass
     if not scores:
-        # fallback to database_specific if present
         try:
             ds = v.get("database_specific") or {}
             score = ds.get("severity") or ds.get("cvss") or None
@@ -122,14 +182,15 @@ def _sev_label(v: dict) -> str:
     return "LOW"
 
 
+# ------------------------ NuGet ------------------------ #
+
 def get_nuget_search(package: str) -> Optional[dict]:
     data = _get(NUGET_SEARCH, params={"q": f"packageid:{package}", "prerelease": "false"})
     if not data:
         return None
     items = data.get("data") or []
     for d in items:
-        # Exact match on id if present
-        if d.get("id", "").lower() == package.lower():
+        if (d.get("id") or "").lower() == package.lower():
             return d
     return items[0] if items else None
 
@@ -139,21 +200,79 @@ def get_nuget_registration(package: str) -> Optional[dict]:
     return _get(f"{NUGET_REG_BASE}/{pkg}/index.json")
 
 
-def extract_repo_url_from_nuget(search_doc: dict) -> Optional[str]:
-    if not isinstance(search_doc, dict):
-        return None
-    # Prefer repository URL if present in registration (source repo)
-    repo = search_doc.get("repositoryUrl") or search_doc.get("repository")
-    # Fallback to projectUrl
-    repo = repo or search_doc.get("projectUrl")
-    if not repo:
-        return None
-    # Look for GitHub repo
-    m = re.search(r"https?://github\.com/([^/\s]+)/([^/\s#]+)", repo)
-    if m:
-        return f"https://github.com/{m.group(1)}/{m.group(2)}"
-    return repo
+def _semver_key(v: str):
+    parts = re.split(r"[.+-]", v)
+    try:
+        return tuple(int(x) if re.fullmatch(r"\d+", x) else x for x in parts)
+    except Exception:
+        return tuple(parts)
 
+
+def _iter_reg_items(reg: dict) -> Iterable[dict]:
+    for page in (reg or {}).get("items", []) or []:
+        items = page.get("items")
+        if not items and page.get("@id"):
+            hydrated = _get(page["@id"]) or {}
+            items = hydrated.get("items") or []
+        for e in items or []:
+            yield (e.get("catalogEntry") or {})
+
+
+def _latest_version_from_reg(reg: dict) -> Optional[str]:
+    try:
+        versions = [ce.get("version") for ce in _iter_reg_items(reg) if ce.get("version")]
+        versions.sort(key=_semver_key)
+        return versions[-1] if versions else None
+    except Exception:
+        return None
+
+
+def _published_of_version(reg: dict, version: str) -> Optional[str]:
+    try:
+        for ce in _iter_reg_items(reg):
+            if str(ce.get("version")).lower() == str(version).lower():
+                return ce.get("published")
+    except Exception:
+        pass
+    return None
+
+
+def _latest_published_from_reg(reg: dict) -> Optional[str]:
+    try:
+        last_date = None
+        for ce in _iter_reg_items(reg):
+            pub = ce.get("published")
+            if pub:
+                dtv = _try_parse_iso(pub)
+                if dtv and (last_date is None or dtv > last_date):
+                    last_date = dtv
+        return last_date.isoformat() if last_date else None
+    except Exception:
+        return None
+
+
+def extract_repo_url_from_docs(search_doc: dict, reg_doc: dict) -> Optional[str]:
+    # Prefer repository info from registration pages
+    try:
+        for ce in _iter_reg_items(reg_doc):
+            repo = None
+            if isinstance(ce.get("repository"), dict):
+                repo = (ce["repository"] or {}).get("url")
+            repo = repo or ce.get("repositoryUrl") or ce.get("projectUrl")
+            if repo:
+                m = re.search(r"https?://github\.com/([^/\s]+)/([^/\s#]+)", repo)
+                return f"https://github.com/{m.group(1)}/{m.group(2)}" if m else repo
+    except Exception:
+        pass
+    # Fallback to search doc
+    repo = (search_doc or {}).get("repositoryUrl") or (search_doc or {}).get("projectUrl")
+    if repo:
+        m = re.search(r"https?://github\.com/([^/\s]+)/([^/\s#]+)", repo)
+        return f"https://github.com/{m.group(1)}/{m.group(2)}" if m else repo
+    return None
+
+
+# ------------------------ GitHub ------------------------ #
 
 def get_github_repo_stats(repo_url: str) -> Dict[str, Any]:
     out: Dict[str, Any] = {"repo_url": repo_url}
@@ -163,7 +282,7 @@ def get_github_repo_stats(repo_url: str) -> Dict[str, Any]:
     owner, repo = m.group(1), m.group(2)
     headers = {
         "Accept": "application/vnd.github+json",
-        "User-Agent": "nuget-security-audit/1.0",
+        "User-Agent": "nuget-security-audit/1.1",
     }
     if GITHUB_TOKEN:
         headers["Authorization"] = f"Bearer {GITHUB_TOKEN}"
@@ -180,6 +299,8 @@ def get_github_repo_stats(repo_url: str) -> Dict[str, Any]:
     return out
 
 
+# ------------------------ Summarization ------------------------ #
+
 def summarize_nuget(package: str, version: Optional[str]) -> Dict[str, Any]:
     search = get_nuget_search(package) or {}
     reg = get_nuget_registration(package) or {}
@@ -189,8 +310,12 @@ def summarize_nuget(package: str, version: Optional[str]) -> Dict[str, Any]:
     total_downloads = search.get("totalDownloads")
     license_expression = search.get("licenseExpression") or search.get("license") or None
     project_url = search.get("projectUrl")
-    repo_url = extract_repo_url_from_nuget(search)
-    published_iso = _latest_published_from_reg(reg)  # fallback if not in search
+    repo_url = extract_repo_url_from_docs(search, reg)
+    published_iso = None
+    if version_eff:
+        published_iso = _published_of_version(reg, version_eff)
+    if not published_iso:
+        published_iso = _latest_published_from_reg(reg)
 
     return {
         "package": package,
@@ -207,44 +332,7 @@ def summarize_nuget(package: str, version: Optional[str]) -> Dict[str, Any]:
     }
 
 
-def _latest_version_from_reg(reg: dict) -> Optional[str]:
-    try:
-        items = reg.get("items") or []
-        versions = []
-        for page in items:
-            for e in page.get("items") or []:
-                ci = e.get("catalogEntry") or {}
-                versions.append(ci.get("version"))
-        versions = [v for v in versions if isinstance(v, str)]
-        # naive semver sort by split ints where possible
-        def _key(v: str):
-            parts = re.split(r"[.+-]", v)
-            try:
-                return tuple(int(x) if x.isdigit() else x for x in parts)
-            except Exception:
-                return tuple(parts)
-        versions.sort(key=_key)
-        return versions[-1] if versions else None
-    except Exception:
-        return None
-
-
-def _latest_published_from_reg(reg: dict) -> Optional[str]:
-    try:
-        items = reg.get("items") or []
-        last_date = None
-        for page in items:
-            for e in page.get("items") or []:
-                ci = e.get("catalogEntry") or {}
-                pub = ci.get("published")
-                if pub:
-                    dtv = _try_parse_iso(pub)
-                    if dtv and (last_date is None or dtv > last_date):
-                        last_date = dtv
-        return last_date.isoformat() if last_date else None
-    except Exception:
-        return None
-
+# ------------------------ Scoring ------------------------ #
 
 def _try_parse_iso(s: str) -> Optional[dt.datetime]:
     try:
@@ -262,21 +350,23 @@ def days_since(iso: Optional[str]) -> Optional[int]:
     return max(0, (dt.datetime.now(dt.timezone.utc) - d).days)
 
 
+def _popularity_score(downloads: int) -> float:
+    if not downloads or downloads <= 0:
+        return 0.0
+    lg = max(0.0, math.log10(downloads))
+    # Map 1e3 -> 0, 1e7 -> 100
+    return max(0.0, min(100.0, (lg - 3.0) / (7.0 - 3.0) * 100.0))
+
+
 def compute_risk(nuget_info: dict, vulns: List[dict], gh: Dict[str, Any]) -> Tuple[Dict[str, float], float, str]:
     # Dimensions
-    # - vulnerabilities (count + max severity)
-    # - freshness (days since latest publish)
-    # - popularity (downloads)
-    # - repo posture (stars, archived flag)
-    # - license
     scores: Dict[str, float] = {}
 
-    # Vulnerabilities: start at 100; subtract based on severity and count
+    # Vulnerabilities
     vulns_count = len(vulns)
     max_cvss = max([v.get("_max_cvss") or 0 for v in vulns], default=0)
     vul_score = 100.0
     if vulns_count > 0:
-        # Heavier hit for critical/high
         vul_score -= min(70.0, 15.0 * vulns_count)
         if max_cvss >= 9.0:
             vul_score -= 20
@@ -293,7 +383,7 @@ def compute_risk(nuget_info: dict, vulns: List[dict], gh: Dict[str, Any]) -> Tup
     if d is None:
         fresh -= 15
     elif d <= 30:
-        fresh -= 0
+        pass
     elif d <= 90:
         fresh -= 10
     elif d <= 180:
@@ -307,13 +397,13 @@ def compute_risk(nuget_info: dict, vulns: List[dict], gh: Dict[str, Any]) -> Tup
 
     # Popularity (downloads)
     dl = nuget_info.get("total_downloads") or 0
-    # log-scale mapping to 0..100 with 1e6 ~ 80, 1e7+ ~ 100
-    pop = 0.0 if dl <= 0 else min(100.0, 20.0 + 20.0 * math.log10(max(1, dl)))
-    pop = max(0.0, min(100.0, pop))
+    pop = _popularity_score(dl)
     scores["popularity"] = pop
 
     # Repo posture
     repo = 100.0
+    if not nuget_info.get("repo_url"):
+        repo -= 15  # mild penalty if no source repo discovered
     if gh.get("archived") or gh.get("disabled"):
         repo -= 40
     stars = gh.get("stars") or 0
@@ -341,7 +431,11 @@ def compute_risk(nuget_info: dict, vulns: List[dict], gh: Dict[str, Any]) -> Tup
     if not lic:
         lic_score -= 20
     elif any(x in lic for x in ("GPL", "AGPL")):
-        lic_score -= 10  # caution for restrictive copyleft in many enterprise contexts
+        lic_score -= 10
+    elif any(x in lic for x in ("LGPL", "MPL")):
+        lic_score -= 5
+    if lic in ("NOASSERTION", "CUSTOM"):
+        lic_score -= 15
     scores["license"] = max(0.0, min(100.0, lic_score))
 
     # Weighted overall
@@ -361,6 +455,8 @@ def compute_risk(nuget_info: dict, vulns: List[dict], gh: Dict[str, Any]) -> Tup
     )
     return scores, overall, rating
 
+
+# ------------------------ Reports ------------------------ #
 
 def make_pdf_report(path: str, package: str, version: Optional[str], nuget_info: dict, gh: dict, vulns: List[dict], scores: Dict[str, float], overall: float, rating: str):
     if not (plt and PdfPages):
@@ -394,7 +490,10 @@ def make_pdf_report(path: str, package: str, version: Optional[str], nuget_info:
             lines.append(f"GitHub stars: {gh.get('stars')}  open_issues: {gh.get('open_issues')}  archived: {bool(gh.get('archived'))}")
         lines.append(f"License: {nuget_info.get('license_expression') or gh.get('license') or 'n/a'}")
         lines.append("")
-        lines.append(f"Vulnerabilities: {len(vulns)}  Max CVSS: {max([v.get('_max_cvss') or 0 for v in vulns], default=0):.1f}" if vulns else "Vulnerabilities: 0")
+        if vulns:
+            lines.append(f"Vulnerabilities: {len(vulns)}  Max CVSS: {max([v.get('_max_cvss') or 0 for v in vulns], default=0):.1f}")
+        else:
+            lines.append("Vulnerabilities: 0")
         lines.append(f"Overall: {overall}/100  Rating: {rating.upper()}")
 
         y = 0.95
@@ -404,24 +503,21 @@ def make_pdf_report(path: str, package: str, version: Optional[str], nuget_info:
             ax1.text(0.02, y, line, fontsize=12, transform=ax1.transAxes)
             y -= 0.035
 
-        # simple legend
         ax1.add_patch(matplotlib.patches.Rectangle((0.02, y-0.02), 0.04, 0.02, color=rating_colors.get(rating, "#333"), transform=ax1.transAxes, clip_on=False))
         ax1.text(0.07, y-0.02, f"Rating: {rating.upper()}", fontsize=12, va="bottom", transform=ax1.transAxes)
 
         pdf.savefig(fig1, bbox_inches="tight")
         plt.close(fig1)
 
-        # Page 2: Scores bar chart (ensure x labels not clipped)
+        # Page 2: Scores bar chart
         fig2, ax2 = plt.subplots(figsize=(10.0, 5.0), dpi=150, constrained_layout=True)
         bars = ax2.bar(dims, values, color="#1f77b4")
         ax2.set_ylim(0, 100)
         ax2.set_ylabel("Score (0–100)")
         ax2.set_title(f"Security Dimension Scores — Overall {overall}/100 ({rating})", color=rating_colors.get(rating, "#222"))
-        # Rotate and anchor to avoid clipping
         plt.setp(ax2.get_xticklabels(), rotation=30, ha="right", rotation_mode="anchor")
         for b, v in zip(bars, values):
             ax2.text(b.get_x() + b.get_width()/2, v + 1, f"{int(round(v))}", ha="center", va="bottom", fontsize=9)
-        # Ensure margins are sufficient even if labels are long
         fig2.subplots_adjust(bottom=0.25)
         pdf.savefig(fig2, bbox_inches="tight")
         plt.close(fig2)
@@ -433,9 +529,8 @@ def make_pdf_report(path: str, package: str, version: Optional[str], nuget_info:
             ax3.set_title("Known Vulnerabilities (OSV.dev)", fontsize=14, fontweight="bold")
             rows = []
             for v in vulns[:20]:
-                ids = ", ".join(v.get("aliases") or v.get("id") or [])
-                if not ids:
-                    ids = v.get("id") or "—"
+                aliases = v.get("aliases")
+                ids = ", ".join(aliases) if isinstance(aliases, list) and aliases else (v.get("id") or "—")
                 desc = (v.get("summary") or v.get("details") or "").strip().replace("\n", " ")
                 if len(desc) > 140:
                     desc = desc[:137] + "..."
@@ -444,19 +539,39 @@ def make_pdf_report(path: str, package: str, version: Optional[str], nuget_info:
             table.auto_set_font_size(False)
             table.set_fontsize(9)
             table.scale(1, 1.2)
+            # Try to auto-fit columns if available (matplotlib >= 3.7)
+            try:
+                for i in range(4):
+                    table.auto_set_column_width(col=i)
+            except Exception:
+                pass
             pdf.savefig(fig3, bbox_inches="tight")
             plt.close(fig3)
 
 
-def audit_package(package: str, version: Optional[str], pdf_out: Optional[str], json_out: bool):
+# ------------------------ Orchestration ------------------------ #
+
+def audit_package(package: str, version: Optional[str], pdf_out: Optional[str], json_out: bool, *, no_github: bool = False, osv_only: bool = False):
+    if osv_only:
+        vulns = query_osv_vulns(package, version)
+        result = {
+            "package": package,
+            "requested_version": version,
+            "vulnerabilities": [{"id": v.get("id"), "max_cvss": v.get("_max_cvss"), "severity": v.get("_sev_label")} for v in vulns],
+            "count": len(vulns),
+        }
+        print(json.dumps(result, indent=2))
+        return
+
     nuget = summarize_nuget(package, version)
-    gh = get_github_repo_stats(nuget.get("repo_url")) if nuget.get("repo_url") else {}
+    gh = get_github_repo_stats(nuget.get("repo_url")) if (nuget.get("repo_url") and not no_github) else {}
     vulns = query_osv_vulns(package, nuget.get("effective_version"))
     scores, overall, rating = compute_risk(nuget, vulns, gh)
 
     result = {
         "package": package,
-        "version": version or nuget.get("effective_version"),
+        "requested_version": version,
+        "version": nuget.get("effective_version"),
         "nuget": {
             "latest_version": nuget.get("latest_version"),
             "published": nuget.get("published"),
@@ -484,9 +599,8 @@ def parse_packages_lock(path: str) -> List[Tuple[str, Optional[str]]]:
     with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
     out: List[Tuple[str, Optional[str]]] = []
-    # packages.lock.json has TFMs at top-level "dependencies"
     deps = data.get("dependencies") or {}
-    for _, tfm_deps in (deps.items() if isinstance(deps, dict) else []):
+    for _tfm, tfm_deps in (deps.items() if isinstance(deps, dict) else []):
         if not isinstance(tfm_deps, dict):
             continue
         for name, meta in tfm_deps.items():
@@ -494,7 +608,6 @@ def parse_packages_lock(path: str) -> List[Tuple[str, Optional[str]]]:
             if isinstance(meta, dict):
                 ver = meta.get("resolved") or meta.get("version")
             out.append((name, ver))
-    # Fallback: "packages" list
     if not out and isinstance(data.get("packages"), list):
         for p in data["packages"]:
             name = p.get("id") or p.get("name")
@@ -505,11 +618,9 @@ def parse_packages_lock(path: str) -> List[Tuple[str, Optional[str]]]:
 
 
 def _discover_lockfile(start_dir: str) -> Optional[str]:
-    # Prefer a lockfile in the current directory
     candidate = os.path.join(start_dir, "packages.lock.json")
     if os.path.isfile(candidate):
         return candidate
-    # Otherwise, find the first occurrence recursively
     for root, _dirs, files in os.walk(start_dir):
         if "packages.lock.json" in files:
             return os.path.join(root, "packages.lock.json")
@@ -522,59 +633,84 @@ def list_auditable_packages(lock_path: Optional[str]) -> List[Tuple[str, Optiona
         print("No packages.lock.json found. Specify --path to a lockfile.", file=sys.stderr)
         return []
     items = parse_packages_lock(path)
-    # Deduplicate by package name, prefer a resolved version if available
     best: Dict[str, Optional[str]] = {}
     for name, ver in items:
         if name not in best or (ver and not best[name]):
             best[name] = ver
-    # Sort by name
     return sorted(best.items(), key=lambda kv: kv[0].lower())
 
 
-def audit_lockfile(lock_path: str, pdf_out: Optional[str], json_out: bool):
+def audit_lockfile(lock_path: str, pdf_out: Optional[str], json_out: bool, *, no_github: bool = False, osv_only: bool = False):
     items = parse_packages_lock(lock_path)
     results = []
     for name, ver in items[:50]:  # cap for speed
+        if osv_only:
+            vulns = query_osv_vulns(name, ver)
+            r = {
+                "package": name,
+                "version": ver,
+                "vulnerabilities": len(vulns),
+            }
+            results.append(r)
+            sys.stderr.write(f"[OSV] {name} {ver or ''} vulns={r['vulnerabilities']}\n")
+            continue
         nuget = summarize_nuget(name, ver)
-        gh = get_github_repo_stats(nuget.get("repo_url")) if nuget.get("repo_url") else {}
+        gh = get_github_repo_stats(nuget.get("repo_url")) if (nuget.get("repo_url") and not no_github) else {}
         vulns = query_osv_vulns(name, nuget.get("effective_version"))
         scores, overall, rating = compute_risk(nuget, vulns, gh)
-        results.append({
+        r = {
             "package": name,
             "version": ver or nuget.get("effective_version"),
             "overall": overall,
             "rating": rating,
             "vulnerabilities": len(vulns),
-        })
+        }
+        results.append(r)
+        sys.stderr.write(f"{name} {r['version']} {rating} {overall} vulns={r['vulnerabilities']}\n")
+
     payload = {"lockfile": lock_path, "results": results}
     if json_out or not pdf_out:
         print(json.dumps(payload, indent=2))
 
     if pdf_out:
-        # Simple PDF: one page with top results table
         if not (plt and PdfPages):
             raise RuntimeError("matplotlib is required for PDF output. pip install matplotlib")
         with PdfPages(pdf_out) as pdf:
             fig, ax = plt.subplots(figsize=(10, 8), dpi=150, constrained_layout=True)
             ax.axis("off")
             ax.set_title(f"NuGet Lockfile Audit — {os.path.basename(lock_path)}", fontsize=14, fontweight="bold")
-            rows = []
-            for r in results:
-                rows.append([r["package"], r["version"] or "n/a", r["rating"], r["overall"], r["vulnerabilities"]])
-            table = ax.table(cellText=rows, colLabels=["Package", "Version", "Rating", "Score", "Vulns"], loc="center", cellLoc="left")
-            table.auto_set_font_size(False)
-            table.set_fontsize(9)
-            table.scale(1, 1.2)
+            if results:
+                # Harmonize columns depending on mode
+                if osv_only:
+                    rows = [[r["package"], r.get("version") or "n/a", r["vulnerabilities"]] for r in results]
+                    col_labels = ["Package", "Version", "Vulns"]
+                else:
+                    rows = [[r["package"], r.get("version") or "n/a", r["rating"], r["overall"], r["vulnerabilities"]] for r in results]
+                    col_labels = ["Package", "Version", "Rating", "Score", "Vulns"]
+                table = ax.table(cellText=rows, colLabels=col_labels, loc="center", cellLoc="left")
+                table.auto_set_font_size(False)
+                table.set_fontsize(9)
+                table.scale(1, 1.2)
+                try:
+                    for i in range(len(col_labels)):
+                        table.auto_set_column_width(col=i)
+                except Exception:
+                    pass
             pdf.savefig(fig, bbox_inches="tight")
             plt.close(fig)
         print(f"PDF written: {pdf_out}")
 
 
+# ------------------------ CLI ------------------------ #
+
 def main():
-    ap = argparse.ArgumentParser(description="Audit security of C# NuGet modules and generate a PDF report.")
-    # Global --list to print auditable packages from a packages.lock.json
+    ap = argparse.ArgumentParser(description="Audit security of C# NuGet modules and optionally generate a PDF report.")
+    # The above hack won't work; we re-add properly below to preserve help order.
+
+    # Proper flags
     ap.add_argument("--list", action="store_true", help="List packages from packages.lock.json that can be audited")
     ap.add_argument("--path", help="Path to packages.lock.json for --list (defaults to auto-detect)")
+
     sub = ap.add_subparsers(dest="cmd", required=False)
 
     ap_pkg = sub.add_parser("package", help="Audit a single package")
@@ -582,11 +718,15 @@ def main():
     ap_pkg.add_argument("--version", help="Specific version (defaults to latest)")
     ap_pkg.add_argument("--pdf", help="Path to output PDF (if omitted, prints JSON only)")
     ap_pkg.add_argument("--json", action="store_true", help="Print JSON to stdout")
+    ap_pkg.add_argument("--no-github", action="store_true", help="Skip GitHub API calls")
+    ap_pkg.add_argument("--osv-only", action="store_true", help="Only query OSV for vulnerabilities and print results")
 
     ap_lock = sub.add_parser("lockfile", help="Audit packages.lock.json")
     ap_lock.add_argument("--path", required=True, help="Path to packages.lock.json")
     ap_lock.add_argument("--pdf", help="Path to output PDF (if omitted, prints JSON only)")
     ap_lock.add_argument("--json", action="store_true", help="Print JSON to stdout")
+    ap_lock.add_argument("--no-github", action="store_true", help="Skip GitHub API calls")
+    ap_lock.add_argument("--osv-only", action="store_true", help="Only query OSV for vulnerabilities and print results")
 
     args = ap.parse_args()
 
@@ -599,10 +739,15 @@ def main():
             print(f"{name}" + (f"=={ver}" if ver else ""))
         return
 
+    # If no subcommand was provided, show help
+    if not args.cmd:
+        ap.print_help(sys.stderr)
+        sys.exit(2)
+
     if args.cmd == "package":
-        audit_package(args.name, args.version, args.pdf, args.json)
+        audit_package(args.name, args.version, args.pdf, args.json, no_github=args.no_github, osv_only=args.osv_only)
     elif args.cmd == "lockfile":
-        audit_lockfile(args.path, args.pdf, args.json)
+        audit_lockfile(args.path, args.pdf, args.json, no_github=args.no_github, osv_only=args.osv_only)
 
 
 if __name__ == "__main__":
