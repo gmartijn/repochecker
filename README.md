@@ -153,6 +153,45 @@ python pypi_audit_report.py merged.json -o report.csv --xlsx report.xlsx
 
 ---
 
+---
+
+### `nuget-audit.py` – NuGet/.NET Package Clairvoyant 🔮📦
+
+Ever wondered if that shiny C# package is a guardian angel or a gremlin in a DLL? This script stares into the NuGet crystal ball and tells you the vibes.
+
+#### 🧠 What It Actually Does
+- **OSV.dev check (NuGet ecosystem):** Looks up **version-specific** vulnerabilities. Use `--osv-only` for a quick vuln census.
+- **NuGet metadata spelunking:** Latest version, **per-version publish dates** (hydrated from registration pages), total downloads, license, project/repo URLs.
+- **GitHub repo posture (optional):** Stars, recent activity (`pushed_at`), archived/disabled flags, and license (skip with `--no-github`).
+- **Weighted Risk Score:** Blends five dimensions — **Vulnerabilities, Freshness, Popularity, Repo Posture, License** — into a crisp 0–100.  
+  Curious how the sausage is made? See **[NuGet Calculation Model](nuget-calculation.md)**.
+- **Pretty PDF output:** Summary page, **bar chart** of subscores (labels won’t clip!), and a tidy vulnerability table.
+- **Proxy-friendly:** `--skipssl` avoids TLS verification woes (only use behind a trusted proxy; auditors are watching 👀).
+
+#### 🧪 Usage
+
+```bash
+# List auditable packages from a lockfile
+python nuget-audit.py --list --path ./packages.lock.json
+
+# Audit a single package, JSON output
+python nuget-audit.py package --name Serilog --json
+
+# Audit a specific version and export a PDF
+python nuget-audit.py package --name Newtonsoft.Json --version 13.0.3 --pdf newtonsoft_audit.pdf
+
+# Audit a lockfile (top N), quick OSV-only pass
+python nuget-audit.py lockfile --path ./packages.lock.json --osv-only
+```
+
+#### 🧷 Flags You’ll Actually Use
+- **Global:** `--list`, `--path PATH`, `--skipssl`
+- **package:** `--name NAME` · `--version VERSION` · `--json` · `--pdf PATH` · `--no-github` · `--osv-only`
+- **lockfile:** `--path PATH` · `--json` · `--pdf PATH` · `--no-github` · `--osv-only`
+
+> **Security note:** `--skipssl` disables TLS certificate verification. Use only with a trusted corporate proxy or during local debugging.
+
+
 ## Quick Start 🏃‍♂️
 
 ```bash
