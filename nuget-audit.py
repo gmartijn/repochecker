@@ -1,28 +1,26 @@
 #!/usr/bin/env python3
 """
-NuGet/C# package security audit (enhanced):
+NuGet/C# package security audit (enhanced, v1.3)
+
+What it does:
 - Queries OSV.dev for known vulnerabilities (ecosystem=NuGet).
-- Pulls NuGet metadata (downloads, latest publish, license, repo URL) with robust page hydration.
-- Optionally augments with GitHub repo signals (stars, push activity) if a repo URL exists.
-- Computes a weighted risk score (vulns, freshness, popularity, repo posture, license).
-- Popularity mapping: 1e3 -> 0, 1e7 -> 100 (log scale, clamped)
-- Freshness reflects the *effective* version's publish date, not just latest.
-- Historical OSV: optionally fetch all-time vuln count and (optionally) fold it into the score via --history-weight.
-- Generates a PDF report with a summary page and a bar chart (x-axis labels not clipped), plus vuln table.
-- CLI niceties: sensible help if no subcommand; --no-github; --osv-only; --skipssl; --historical; --history-weight.
+- Pulls NuGet metadata (downloads, latest publish, license, repo URL) with robust registration hydration.
+- Optionally augments with GitHub repo signals (stars, recent push, archived/disabled).
+- Computes a weighted risk score across five core dimensions (vulns, freshness, popularity, repo posture, license)
+  and an optional sixth dimension for historical vulns (parameterized weight).
+- Generates a PDF report with a summary page, a bar chart (labels won't clip), and a vulnerability table.
+- Nice CLI: subcommands (package/lockfile), --no-github, --osv-only, --historical, --history-weight,
+  --skipssl (for proxies), and --fail-below (CI-friendly threshold with exit code 3).
 
-Usage examples:
-  # Audit a single package, JSON only
-  python nuget_security_audit_enhanced.py package --name Newtonsoft.Json --json
+Quick examples:
+  # JSON only (latest version)
+  python nuget-audit.py package --name Newtonsoft.Json --json
 
-  # Audit a single package and write a PDF
-  python nuget_security_audit_enhanced.py package --name Serilog --pdf serilog_audit.pdf
+  # Specific version + PDF
+  python nuget-audit.py package --name Serilog --version 3.0.1 --pdf serilog_audit.pdf
 
-  # Audit a lockfile and write a PDF table of top results
-  python nuget_security_audit_enhanced.py lockfile --path path/to/packages.lock.json --pdf audit.pdf
-
-  # List auditable packages from a lockfile
-  python nuget_security_audit_enhanced.py --list --path path/to/packages.lock.json
+  # Lockfile triage (JSON), fail build if any score < 70
+  python nuget-audit.py lockfile --path ./packages.lock.json --json --fail-below 70
 """
 
 import os
@@ -35,6 +33,7 @@ import argparse
 import datetime as dt
 from typing import Optional, Dict, Any, List, Tuple, Iterable
 import textwrap
+
 try:
     import urllib3
 except Exception:
@@ -60,19 +59,17 @@ GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 
 NUGET_SEARCH = "https://api-v2v3search-0.nuget.org/query"
 NUGET_REG_BASE = "https://api.nuget.org/v3/registration5-gz-semver2"
-
 OSV_QUERY = "https://api.osv.dev/v1/query"
 
 SESSION = requests.Session()
 SESSION.headers.update({
-    "User-Agent": "nuget-security-audit/1.2",
+    "User-Agent": "nuget-security-audit/1.3",
     "Accept": "application/json",
 })
 DEFAULT_TIMEOUT = 20
 
 
 # ------------------------ HTTP helpers with backoff ------------------------ #
-
 def _get(url: str, *, params=None, headers=None, timeout=DEFAULT_TIMEOUT) -> Optional[dict]:
     last_exception = None
     for attempt in range(3):
@@ -87,7 +84,6 @@ def _get(url: str, *, params=None, headers=None, timeout=DEFAULT_TIMEOUT) -> Opt
                 time.sleep(delay)
                 continue
             r.raise_for_status()
-            # Best-effort JSON parse regardless of content-type
             try:
                 return r.json()
             except Exception:
@@ -142,7 +138,6 @@ def _post(url: str, *, json_body=None, headers=None, timeout=DEFAULT_TIMEOUT) ->
 
 
 # ------------------------ OSV ------------------------ #
-
 def query_osv_vulns(package: str, version: Optional[str] = None) -> List[dict]:
     body = {"package": {"name": package, "ecosystem": "NuGet"}}
     if version:
@@ -189,7 +184,6 @@ def _sev_label(v: dict) -> str:
 
 
 # ------------------------ NuGet ------------------------ #
-
 def get_nuget_search(package: str) -> Optional[dict]:
     data = _get(NUGET_SEARCH, params={"q": f"packageid:{package}", "prerelease": "false"})
     if not data:
@@ -279,7 +273,6 @@ def extract_repo_url_from_docs(search_doc: dict, reg_doc: dict) -> Optional[str]
 
 
 # ------------------------ GitHub ------------------------ #
-
 def get_github_repo_stats(repo_url: str) -> Dict[str, Any]:
     out: Dict[str, Any] = {"repo_url": repo_url}
     m = re.search(r"github\.com/([^/]+)/([^/#]+)", repo_url or "")
@@ -288,7 +281,7 @@ def get_github_repo_stats(repo_url: str) -> Dict[str, Any]:
     owner, repo = m.group(1), m.group(2)
     headers = {
         "Accept": "application/vnd.github+json",
-        "User-Agent": "nuget-security-audit/1.2",
+        "User-Agent": "nuget-security-audit/1.3",
     }
     if GITHUB_TOKEN:
         headers["Authorization"] = f"Bearer {GITHUB_TOKEN}"
@@ -306,7 +299,6 @@ def get_github_repo_stats(repo_url: str) -> Dict[str, Any]:
 
 
 # ------------------------ Summarization ------------------------ #
-
 def summarize_nuget(package: str, version: Optional[str]) -> Dict[str, Any]:
     search = get_nuget_search(package) or {}
     reg = get_nuget_registration(package) or {}
@@ -339,7 +331,6 @@ def summarize_nuget(package: str, version: Optional[str]) -> Dict[str, Any]:
 
 
 # ------------------------ Scoring ------------------------ #
-
 def _try_parse_iso(s: str) -> Optional[dt.datetime]:
     try:
         return dt.datetime.fromisoformat(s.replace("Z", "+00:00"))
@@ -366,10 +357,9 @@ def _popularity_score(downloads: int) -> float:
 
 def compute_risk(nuget_info: dict, vulns: List[dict], gh: Dict[str, Any],
                  *, history_count: Optional[int] = None, history_weight: float = 0.0) -> Tuple[Dict[str, float], float, str]:
-    # Dimensions
     scores: Dict[str, float] = {}
 
-    # Vulnerabilities (current/effective version)
+    # Vulnerabilities (current version)
     vulns_count = len(vulns)
     max_cvss = max([v.get("_max_cvss") or 0 for v in vulns], default=0)
     vul_score = 100.0
@@ -381,8 +371,7 @@ def compute_risk(nuget_info: dict, vulns: List[dict], gh: Dict[str, Any],
             vul_score -= 12
         elif max_cvss >= 4.0:
             vul_score -= 6
-    vul_score = max(0.0, min(100.0, vul_score))
-    scores["vulnerabilities"] = vul_score
+    scores["vulnerabilities"] = max(0.0, min(100.0, vul_score))
 
     # Freshness
     d = days_since(nuget_info.get("published"))
@@ -399,18 +388,16 @@ def compute_risk(nuget_info: dict, vulns: List[dict], gh: Dict[str, Any],
         fresh -= 35
     else:
         fresh -= 55
-    fresh = max(0.0, min(100.0, fresh))
-    scores["freshness"] = fresh
+    scores["freshness"] = max(0.0, min(100.0, fresh))
 
-    # Popularity (downloads)
+    # Popularity
     dl = nuget_info.get("total_downloads") or 0
-    pop = _popularity_score(dl)
-    scores["popularity"] = pop
+    scores["popularity"] = _popularity_score(dl)
 
     # Repo posture
     repo = 100.0
     if not nuget_info.get("repo_url"):
-        repo -= 15  # mild penalty if no source repo discovered
+        repo -= 15
     if gh.get("archived") or gh.get("disabled"):
         repo -= 40
     stars = gh.get("stars") or 0
@@ -429,8 +416,7 @@ def compute_risk(nuget_info: dict, vulns: List[dict], gh: Dict[str, Any],
                 repo -= 15
             elif pdays > 90:
                 repo -= 8
-    repo = max(0.0, min(100.0, repo))
-    scores["repo_posture"] = repo
+    scores["repo_posture"] = max(0.0, min(100.0, repo))
 
     # License
     lic = (nuget_info.get("license_expression") or gh.get("license") or "").upper()
@@ -445,14 +431,13 @@ def compute_risk(nuget_info: dict, vulns: List[dict], gh: Dict[str, Any],
         lic_score -= 15
     scores["license"] = max(0.0, min(100.0, lic_score))
 
-    # Optional historical dimension (penalize many past vulns)
+    # Optional historical penalty dimension
     if history_weight and history_weight > 0:
         hc = max(0, int(history_count or 0))
-        # Each past vuln knocks 8 points off (cap at 80) -> 100..20 scale
-        history_score = max(0.0, 100.0 - min(80.0, 8.0 * hc))
+        history_score = max(0.0, 100.0 - min(80.0, 8.0 * hc))  # each past vuln knocks 8 points, cap 80
         scores["history"] = history_score
 
-    # Weighted overall (normalize)
+    # Weighted overall (normalize when history added)
     base_weights = {
         "vulnerabilities": 0.40,
         "freshness": 0.20,
@@ -476,9 +461,9 @@ def compute_risk(nuget_info: dict, vulns: List[dict], gh: Dict[str, Any],
 
 
 # ------------------------ Reports ------------------------ #
-
 def make_pdf_report(path: str, package: str, version: Optional[str], nuget_info: dict, gh: dict,
-                    vulns: List[dict], scores: Dict[str, float], overall: float, rating: str):
+                    vulns: List[dict], scores: Dict[str, float], overall: float, rating: str,
+                    *, historical_total: Optional[int] = None, historical_past: Optional[int] = None):
     if not (plt and PdfPages):
         raise RuntimeError("matplotlib is required for PDF output. pip install matplotlib")
 
@@ -514,11 +499,9 @@ def make_pdf_report(path: str, package: str, version: Optional[str], nuget_info:
             lines.append(f"Vulnerabilities (current): {len(vulns)}  Max CVSS: {max([v.get('_max_cvss') or 0 for v in vulns], default=0):.1f}")
         else:
             lines.append("Vulnerabilities (current): 0")
-        # Historical counts if present (nuget_info fields injected by audit_package)
-        if nuget_info.get("historical_total") is not None:
-            past = nuget_info.get("historical_past")
-            past_str = f", Past (not affecting audited): {past}" if past is not None else ""
-            lines.append(f"Historical vulns (all versions): {nuget_info.get('historical_total')}{past_str}")
+        if historical_total is not None:
+            past_str = f", Past (not affecting audited): {historical_past}" if historical_past is not None else ""
+            lines.append(f"Historical vulns (all versions): {historical_total}{past_str}")
         lines.append(f"Overall: {overall}/100  Rating: {rating.upper()}")
 
         y = 0.95
@@ -539,7 +522,8 @@ def make_pdf_report(path: str, package: str, version: Optional[str], nuget_info:
         bars = ax2.bar(dims, values)
         ax2.set_ylim(0, 100)
         ax2.set_ylabel("Score (0–100)")
-        ax2.set_title(f"Security Dimension Scores — Overall {overall}/100 ({rating})", color=rating_colors.get(rating, "#222"))
+        ax2.set_title(f"Security Dimension Scores — Overall {overall}/100 ({rating})",
+                      color=rating_colors.get(rating, "#222"))
         plt.setp(ax2.get_xticklabels(), rotation=30, ha="right", rotation_mode="anchor")
         for b, v in zip(bars, values):
             ax2.text(b.get_x() + b.get_width()/2, v + 1, f"{int(round(v))}", ha="center", va="bottom", fontsize=9)
@@ -573,73 +557,7 @@ def make_pdf_report(path: str, package: str, version: Optional[str], nuget_info:
             plt.close(fig3)
 
 
-# ------------------------ Orchestration ------------------------ #
-
-def audit_package(package: str, version: Optional[str], pdf_out: Optional[str], json_out: bool, *,
-                  no_github: bool = False, osv_only: bool = False, historical: bool = False, history_weight: float = 0.0):
-    if osv_only:
-        current_vulns = query_osv_vulns(package, version)
-        all_vulns = query_osv_vulns(package) if historical else []
-        result = {
-            "package": package,
-            "requested_version": version,
-            "vulnerabilities": [{"id": v.get("id"), "max_cvss": v.get("_max_cvss"), "severity": v.get("_sev_label")} for v in current_vulns],
-            "count": len(current_vulns),
-        }
-        if historical:
-            result["historical_vulnerabilities"] = [{"id": v.get("id"), "max_cvss": v.get("_max_cvss"), "severity": v.get("_sev_label")} for v in all_vulns]
-            result["historical_counts"] = {
-                "total": len(all_vulns),
-                "past_not_affecting_current": max(0, len(all_vulns) - len(current_vulns)),
-            }
-        print(json.dumps(result, indent=2))
-        return
-
-    nuget = summarize_nuget(package, version)
-    gh = get_github_repo_stats(nuget.get("repo_url")) if (nuget.get("repo_url") and not no_github) else {}
-    vulns = query_osv_vulns(package, nuget.get("effective_version"))
-    all_vulns = query_osv_vulns(package) if historical else []
-    history_count = len(all_vulns) if historical else None
-
-    scores, overall, rating = compute_risk(nuget, vulns, gh, history_count=history_count, history_weight=history_weight)
-
-    # Attach historical counts for JSON and PDF summary
-    if historical:
-        nuget["historical_total"] = len(all_vulns)
-        nuget["historical_past"] = max(0, len(all_vulns) - len(vulns))
-
-    result = {
-        "package": package,
-        "requested_version": version,
-        "version": nuget.get("effective_version"),
-        "nuget": {
-            "latest_version": nuget.get("latest_version"),
-            "published": nuget.get("published"),
-            "total_downloads": nuget.get("total_downloads"),
-            "license_expression": nuget.get("license_expression"),
-            "project_url": nuget.get("project_url"),
-            "repo_url": nuget.get("repo_url"),
-        },
-        "github": gh,
-        "vulnerabilities": [{"id": v.get("id"), "max_cvss": v.get("_max_cvss"), "severity": v.get("_sev_label")} for v in vulns],
-        "osv_counts": {
-            "current": len(vulns),
-            "historical_total": (len(all_vulns) if historical else None),
-            "historical_past_not_affecting": (max(0, len(all_vulns) - len(vulns)) if historical else None)
-        },
-        "scores": scores,
-        "overall": overall,
-        "rating": rating,
-    }
-
-    if json_out or not pdf_out:
-        print(json.dumps(result, indent=2))
-
-    if pdf_out:
-        make_pdf_report(pdf_out, package, version, nuget, gh, vulns, scores, overall, rating)
-        print(f"PDF written: {pdf_out}")
-
-
+# ------------------------ Lockfile helpers ------------------------ #
 def parse_packages_lock(path: str) -> List[Tuple[str, Optional[str]]]:
     with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
@@ -685,8 +603,111 @@ def list_auditable_packages(lock_path: Optional[str]) -> List[Tuple[str, Optiona
     return sorted(best.items(), key=lambda kv: kv[0].lower())
 
 
+# ------------------------ Orchestration ------------------------ #
+def audit_package(package: str, version: Optional[str], pdf_out: Optional[str], json_out: bool, *,
+                  no_github: bool = False, osv_only: bool = False, historical: bool = False,
+                  history_weight: float = 0.0, fail_below: Optional[float] = None):
+    if osv_only:
+        if fail_below is not None:
+            print("--fail-below cannot be used with --osv-only (no overall score is computed).", file=sys.stderr)
+            sys.exit(2)
+        current_vulns = query_osv_vulns(package, version)
+        all_vulns = query_osv_vulns(package) if historical else []
+        result = {
+            "package": package,
+            "requested_version": version,
+            "vulnerabilities": [{"id": v.get("id"), "max_cvss": v.get("_max_cvss"), "severity": v.get("_sev_label")} for v in current_vulns],
+            "count": len(current_vulns),
+        }
+        if historical:
+            result["historical_vulnerabilities"] = [{"id": v.get("id"), "max_cvss": v.get("_max_cvss"), "severity": v.get("_sev_label")} for v in all_vulns]
+            result["historical_counts"] = {
+                "total": len(all_vulns),
+                "past_not_affecting_current": max(0, len(all_vulns) - len(current_vulns)),
+            }
+        print(json.dumps(result, indent=2))
+        return
+
+    nuget = summarize_nuget(package, version)
+    gh = get_github_repo_stats(nuget.get("repo_url")) if (nuget.get("repo_url") and not no_github) else {}
+    vulns = query_osv_vulns(package, nuget.get("effective_version"))
+    all_vulns = query_osv_vulns(package) if historical else []
+    history_count = len(all_vulns) if historical else None
+
+    scores, overall, rating = compute_risk(nuget, vulns, gh, history_count=history_count, history_weight=history_weight)
+
+    # Attach historical counts (for JSON and PDF)
+    hist_total = None
+    hist_past = None
+    if historical:
+        hist_total = len(all_vulns)
+        hist_past = max(0, len(all_vulns) - len(vulns))
+
+    result = {
+        "package": package,
+        "requested_version": version,
+        "version": nuget.get("effective_version"),
+        "nuget": {
+            "latest_version": nuget.get("latest_version"),
+            "published": nuget.get("published"),
+            "total_downloads": nuget.get("total_downloads"),
+            "license_expression": nuget.get("license_expression"),
+            "project_url": nuget.get("project_url"),
+            "repo_url": nuget.get("repo_url"),
+        },
+        "github": gh,
+        "vulnerabilities": [{"id": v.get("id"), "max_cvss": v.get("_max_cvss"), "severity": v.get("_sev_label")} for v in vulns],
+        "osv_counts": {
+            "current": len(vulns),
+            "historical_total": hist_total,
+            "historical_past_not_affecting": hist_past,
+        },
+        "scores": scores,
+        "overall": overall,
+        "rating": rating,
+    }
+
+    if json_out or not pdf_out:
+        print(json.dumps(result, indent=2))
+
+    if pdf_out:
+        make_pdf_report(pdf_out, package, version, nuget, gh, vulns, scores, overall, rating,
+                        historical_total=hist_total, historical_past=hist_past)
+        print(f"PDF written: {pdf_out}")
+
+    # Enforce --fail-below threshold
+    if fail_below is not None:
+        try:
+            thr = float(fail_below)
+        except Exception:
+            print("Invalid --fail-below value; must be a number between 0 and 100.", file=sys.stderr)
+            sys.exit(2)
+        if not (0.0 <= thr <= 100.0):
+            print("Invalid --fail-below value; must be within 0..100.", file=sys.stderr)
+            sys.exit(2)
+        if overall < thr:
+            print(f"FAIL-BELOW: overall {overall} < threshold {thr}", file=sys.stderr)
+            sys.exit(3)
+
+
 def audit_lockfile(lock_path: str, pdf_out: Optional[str], json_out: bool, *,
-                   no_github: bool = False, osv_only: bool = False, historical: bool = False, history_weight: float = 0.0):
+                   no_github: bool = False, osv_only: bool = False, historical: bool = False,
+                   history_weight: float = 0.0, fail_below: Optional[float] = None):
+    # Validate threshold early
+    thr = None
+    if fail_below is not None:
+        try:
+            thr = float(fail_below)
+        except Exception:
+            print("Invalid --fail-below value; must be a number between 0 and 100.", file=sys.stderr)
+            sys.exit(2)
+        if not (0.0 <= thr <= 100.0):
+            print("Invalid --fail-below value; must be within 0..100.", file=sys.stderr)
+            sys.exit(2)
+        if osv_only:
+            print("--fail-below cannot be used with --osv-only (no overall score is computed).", file=sys.stderr)
+            sys.exit(2)
+
     items = parse_packages_lock(lock_path)
     results = []
     for name, ver in items[:50]:  # cap for speed
@@ -765,15 +786,28 @@ def audit_lockfile(lock_path: str, pdf_out: Optional[str], json_out: bool, *,
             plt.close(fig)
         print(f"PDF written: {pdf_out}")
 
+    # Enforce --fail-below after outputs
+    if thr is not None:
+        below = [r for r in results if isinstance(r.get("overall"), (int, float)) and r.get("overall") < thr]
+        if below:
+            names = ", ".join(f"{r['package']}({r['overall']})" for r in below[:10])
+            if len(below) > 10:
+                names += ", ..."
+            print(f"FAIL-BELOW: {len(below)} package(s) below threshold {thr}: {names}", file=sys.stderr)
+            sys.exit(3)
+
 
 # ------------------------ CLI ------------------------ #
-
 def _full_help_message() -> str:
     return textwrap.dedent("""\
     USAGE:
-      nuget_security_audit_enhanced.py --list [--path PATH] [--skipssl]
-      nuget_security_audit_enhanced.py package --name NAME [--version VERSION] [--pdf PATH] [--json] [--no-github] [--osv-only] [--historical] [--history-weight FLOAT] [--skipssl]
-      nuget_security_audit_enhanced.py lockfile --path PATH [--pdf PATH] [--json] [--no-github] [--osv-only] [--historical] [--history-weight FLOAT] [--skipssl]
+      nuget-audit.py --list [--path PATH] [--skipssl]
+      nuget-audit.py package --name NAME [--version VERSION] [--pdf PATH] [--json]
+                             [--no-github] [--osv-only] [--historical] [--history-weight FLOAT]
+                             [--fail-below FLOAT] [--skipssl]
+      nuget-audit.py lockfile --path PATH [--pdf PATH] [--json]
+                              [--no-github] [--osv-only] [--historical] [--history-weight FLOAT]
+                              [--fail-below FLOAT] [--skipssl]
 
     GLOBAL OPTIONS:
       --list                   List packages from packages.lock.json that can be audited
@@ -790,6 +824,7 @@ def _full_help_message() -> str:
         --osv-only             Only query OSV for vulnerabilities and print results
         --historical           Include historical OSV vulnerabilities (all versions) and counts
         --history-weight FLOAT Weight to include historical vuln metric in overall score (default 0.0 = ignore)
+        --fail-below FLOAT     Exit with code 3 if overall score is below this threshold (0-100)
 
       lockfile                 Audit packages.lock.json
         --path PATH            Path to packages.lock.json (required)
@@ -799,16 +834,25 @@ def _full_help_message() -> str:
         --osv-only             Only query OSV for vulnerabilities and print results
         --historical           Include historical OSV vulnerabilities (all versions) and counts
         --history-weight FLOAT Weight to include historical vuln metric in overall score (default 0.0 = ignore)
+        --fail-below FLOAT     Exit with code 3 if any package's overall score is below this threshold (0-100)
 
     ENVIRONMENT:
       GITHUB_TOKEN             GitHub token for higher rate limits when calling GitHub API
 
+    EXIT CODES:
+      0  success
+      2  usage error / incompatible flags (e.g., --fail-below with --osv-only)
+      3  threshold failure (one or more scores fell below --fail-below)
+
     EXAMPLES:
-      python nuget_security_audit_enhanced.py --list --path ./packages.lock.json --skipssl
-      python nuget_security_audit_enhanced.py package --name Serilog --json --historical --history-weight 0.25
-      python nuget_security_audit_enhanced.py package --name Serilog --pdf serilog_audit.pdf
-      python nuget_security_audit_enhanced.py lockfile --path ./packages.lock.json --osv-only --historical
-      python nuget_security_audit_enhanced.py package --name Newtonsoft.Json --no-github --json
+      python nuget-audit.py --list --path ./packages.lock.json --skipssl
+      python nuget-audit.py package --name Serilog --json --skipssl
+      python nuget-audit.py package --name Serilog --pdf serilog_audit.pdf
+      python nuget-audit.py lockfile --path ./packages.lock.json --osv-only
+      python nuget-audit.py package --name Newtonsoft.Json --no-github --json
+      python nuget-audit.py package --name Serilog --json --historical --history-weight 0.25
+      python nuget-audit.py package --name Serilog --json --fail-below 75.0
+      python nuget-audit.py lockfile --path ./packages.lock.json --json --fail-below 70.0
     """)
 
 
@@ -829,6 +873,7 @@ def main():
     ap_pkg.add_argument("--osv-only", action="store_true", help="Only query OSV for vulnerabilities and print results")
     ap_pkg.add_argument("--historical", action="store_true", help="Include historical OSV vulnerabilities (all versions) and counts")
     ap_pkg.add_argument("--history-weight", type=float, default=0.0, help="Weight to include historical vuln metric in overall score (default 0.0 = ignore)")
+    ap_pkg.add_argument("--fail-below", type=float, help="Exit with code 3 if overall score is below this threshold (0-100)")
 
     ap_lock = sub.add_parser("lockfile", help="Audit packages.lock.json")
     ap_lock.add_argument("--path", required=True, help="Path to packages.lock.json")
@@ -838,6 +883,7 @@ def main():
     ap_lock.add_argument("--osv-only", action="store_true", help="Only query OSV for vulnerabilities and print results")
     ap_lock.add_argument("--historical", action="store_true", help="Include historical OSV vulnerabilities (all versions) and counts")
     ap_lock.add_argument("--history-weight", type=float, default=0.0, help="Weight to include historical vuln metric in overall score (default 0.0 = ignore)")
+    ap_lock.add_argument("--fail-below", type=float, help="Exit with code 3 if any package's overall score is below this threshold (0-100)")
 
     args = ap.parse_args()
 
@@ -850,7 +896,7 @@ def main():
         except Exception:
             pass
 
-    # Handle --list early, no subcommand required
+    # Handle --list early
     if getattr(args, "list", False):
         items = list_auditable_packages(getattr(args, "path", None))
         if not items:
@@ -859,7 +905,7 @@ def main():
             print(f"{name}" + (f"=={ver}" if ver else ""))
         return
 
-    # If no subcommand was provided, show help and full parameter list
+    # If no subcommand was provided, show help + extended usage
     if not args.cmd:
         ap.print_help()
         print(_full_help_message(), file=sys.stderr)
@@ -868,11 +914,13 @@ def main():
     if args.cmd == "package":
         audit_package(args.name, args.version, args.pdf, args.json,
                       no_github=args.no_github, osv_only=args.osv_only,
-                      historical=args.historical, history_weight=args.history_weight)
+                      historical=args.historical, history_weight=args.history_weight,
+                      fail_below=args.fail_below)
     elif args.cmd == "lockfile":
         audit_lockfile(args.path, args.pdf, args.json,
                        no_github=args.no_github, osv_only=args.osv_only,
-                       historical=args.historical, history_weight=args.history_weight)
+                       historical=args.historical, history_weight=args.history_weight,
+                       fail_below=args.fail_below)
 
 
 if __name__ == "__main__":
