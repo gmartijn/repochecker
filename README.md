@@ -1,6 +1,6 @@
 # Repository Audit Scripts 🚀
 
-Welcome to **Repository Audit Scripts** – the Swiss Army knife for lazy (read: efficient) developers, DevOps gremlins, and security-conscious caffeine addicts. Why manually check things when a script can do it faster, better, and without reading another 400-page compliance doc?
+Welcome to **Repository Audit Scripts** – the Swiss Army knife for lazy (read: efficient) developers, DevOps gremlins, and security‑conscious caffeine addicts. Why manually check things when a script can do it faster, better, and without reading another 400‑page compliance doc?
 
 ---
 
@@ -14,67 +14,53 @@ Whether you're trying to impress your boss, appease your CI pipeline, or just wa
 
 ---
 
-## Features ✨
+## Feature Line‑Up ✨
 
 ### `githubaudit.py` – The Repo Investigator You Didn’t Know You Needed 🕵️‍♀️🍸
 
 This script snoops through your GitHub repo like a nosy neighbor with an API key. Think of it as your overly judgmental auditor with strong opinions and a thing for JSON.
 
-#### 💼 What It Actually Does
+**What It Does**
+- 📟 Repo Resume Review: basic metadata & settings.
+- 💀 Last Commit Poke: inactivity/abandonment detection.
+- 👷‍♂️ Active Devs: unique committers in last 90 days (bots ignored).
+- ⚖️ License Scoring: permissive ≈ happier auditors.
+- 🛡️ SECURITY.md seeker.
+- 💻 Language bias: points for popular modern stacks.
+- 🐛 Bug pressure: issue open/closed ratio.
+- ✍️ Signed commits: sample GPG verification.
+- 📦 Dependency graph detection.
+- 🕳️ Dependabot alerts (severity aware).
+- 📈 Trust Score + Risk Level.
+- 📝 INI‑configurable scoring.
+- 🧪 CI‑friendly: `--fail-below` gates merges.
+- 📤 Output: `repo_audit.json`.
+- 🔑 Tip: Use a token unless you enjoy 403s.
 
-- **📟 Repo Resume Review:** Checks your repo’s name, license, language, and whether you allow issues.
-- **💀 Last Commit Poke Test:** Detects inactivity or abandonment.
-- **👷‍♂️ Developer Headcount:** Counts unique committers in the last 90 days (ignores bots).
-- **⚖️ License Snooping:** Scores based on license family.
-- **🛡️ Security Policy Hunt:** Looks for `SECURITY.md`.
-- **💻 Language Bias:** Gives points for popular, modern languages.
-- **🐛 Bug Count Check:** Compares open/closed issues for a resolution ratio.
-- **✍️ Signed Commit Detection:** Samples commits and checks for GPG-verified signatures.
-- **📦 Dependency Analysis (NEW):** Detects if GitHub’s dependency graph is enabled.
-- **🕳️ Vulnerability Alerts (NEW):** Pulls open Dependabot alerts and penalizes by severity.
-- **📈 Trust Score + Risk Level:** Rolls everything into a neat number and risk label.
-- **📝 Configurable Scoring:** All thresholds, weights, popular language list, license scoring, dependency/vulnerability weights are configurable via **INI**.
-- **🧪 CI-friendly:** `--fail-below` exits non-zero if the score doesn’t meet your bar.
-- **📦 Output:** Saves everything to `repo_audit.json`.
-- **🔑 Prefers a GitHub token:** Yes, it *works* without one, but the unauthenticated rate limit is basically training wheels. Enjoy 403s, or set a token like a responsible adult. 😇
-
-#### 🧪 Usage
-
+**Usage**
 ```bash
-python githubaudit.py <owner> <repo>   [--skipssl]   [--output <file>]   [--max-commits N]   [--fail-below SCORE]   [--config path/to/config.ini]   [--write-default-config path/to/new.ini]   [--no-deps]
+python githubaudit.py <owner> <repo> \
+  [--skipssl] [--output <file>] [--max-commits N] \
+  [--fail-below SCORE] [--config path/to/config.ini] \
+  [--write-default-config path/to/new.ini] [--no-deps]
 ```
-
----
-
-### ☕ Caffeine Consumption Disclaimer
-
-Running these scripts at 2 AM after your **fifth espresso** may result in:
-
-- Unnecessarily strict thresholds (everything looks risky at 200 bpm).
-- Overly creative commit messages.
-- Philosophical debates with your cat about OSI licenses.
-
-Use responsibly. Scripts don’t cause insomnia—**auditors do.**
 
 ---
 
 ### `dockeraudit.py` – Dockerfile Whisperer 🐳🕵️‍♂️
 
-Ever pulled a Docker image and thought, *“Hmm, hope this wasn’t uploaded by a sleep-deprived intern in 2016”?* Now you don’t have to guess.
+Ever pulled a Docker image and thought, *“Hmm, hope this wasn’t uploaded by a sleep‑deprived intern in 2016”*? Now you don’t have to guess.
 
-#### 🧠 What It Actually Does
+**What It Does**
+- ⭐ Popularity: stars → trust.
+- 📅 Freshness: stale images lose points.
+- 📦 Pull counts: flex responsibly.
+- 🏷️ Tag coverage.
+- 🏢 Org activity.
+- 🙋 User type: org vs. individual.
+- ✅ Signed/verified + official badges.
 
-- ⭐ Popularity Contest: Stars = trust points.
-- 📅 Update Freshness: Penalizes stale images.
-- 📦 Pull Count Flexing: More pulls = more trust.
-- 🏷️ Tag Count: Checks number of tags.
-- 🏢 Org Activity Check: Detects active organizations.
-- 🙋‍♂️ User Type Scoring: Org vs individual.
-- ✅ Signed or Verified: Rewards signed/verified images.
-- 🎖️ Official Publisher Badge: Extra points for official badges.
-
-#### 🧪 Usage
-
+**Usage**
 ```bash
 python dockeraudit.py <image_name> [--score-details] [--skipssl] [--fail-below SCORE]
 ```
@@ -83,15 +69,13 @@ python dockeraudit.py <image_name> [--score-details] [--skipssl] [--fail-below S
 
 ### `npmaudit.py` – Because Trusting Random NPM Packages Blindly Is So 2015 📦
 
-#### 🧠 What It Does
+**What It Does**
+- 📆 Last publish date.
+- 👥 Maintainer count.
+- 📜 License presence.
+- 🎯 Trust Score + Risk Level.
 
-- 📆 Checks last published date.
-- 👥 Counts maintainers.
-- 📜 Verifies license existence.
-- Calculates **Trust Score** and **Risk Level**.
-
-#### 🧪 Usage
-
+**Usage**
 ```bash
 python npmaudit.py <package_name> [--checkdependencies] [--skipssl] [--fail-below SCORE]
 ```
@@ -100,97 +84,114 @@ python npmaudit.py <package_name> [--checkdependencies] [--skipssl] [--fail-belo
 
 ### `pypi_audit.py` – Package Whisperer for PyPI 📦🔍
 
-Ever installed a package from PyPI and thought, *“Is this safe, or am I about to adopt someone’s abandoned side project from 2012?”*  
-This script asks the hard questions, so you don’t have to.
+Ever installed a PyPI package and thought, *“Is this safe, or am I adopting someone’s abandoned side project from 2012?”*  
+This script asks the hard questions so you don’t have to.
 
-#### 🧠 What It Actually Does
-
-- 📅 Release Freshness + Cadence.
-- 📜 License Reality Check (presence + OSI-approved).
-- 🐍 Requires-Python check.
-- 🏗️ Development Status (from Planning to Mature).
-- 📖 README / docs check.
+**What It Does**
+- 📅 Release freshness + cadence.
+- 📜 License reality check (presence + OSI‑approved).
+- 🐍 Requires‑Python sanity.
+- 🏗️ Dev status classifier.
+- 📖 README/docs presence.
 - 👩‍💻 Maintainer presence.
-- 🛞 Wheels (with manylinux/abi3 and Python 3 bonus).
-- 🔗 URLs: homepage, repo, docs.
-- 🏷️ CI Badge detection.
-- 📦 Dependency count + penalty for heavy packages.
+- 🛞 Wheel niceness (manylinux/abi3, Py3 bonus).
+- 🔗 URLs: homepage/repo/docs.
+- 🏷️ CI badge detection.
+- 📦 Dependency counts.
 - 🐛 OSV vulnerability check.
 - 📊 Trust Score + Risk Level.
 - 📝 JSON & TL;DR output.
-- **NEW:** `--skipssl` flag for SSL verification skipping.
+- 🧪 CI‑friendly: `--fail-below`, `--fail-above`.
+- ⚙️ `--skipssl` for quirky proxies.
 
-#### 🧪 Usage
-
+**Usage**
 ```bash
-python pypi_audit.py <package_name> [--file packages.txt] [--pretty] [--timeout 15] [--no-osv] [--fail-above SCORE] [--fail-below SCORE] [--out report.json] [--no-tldr] [--stdout-json] [--skipssl]
+python pypi_audit.py <package_name> [--file packages.txt] [--pretty] [--timeout 15] \
+  [--no-osv] [--fail-above SCORE] [--fail-below SCORE] [--out report.json] \
+  [--no-tldr] [--stdout-json] [--skipssl]
 ```
 
 ---
 
 ### `pypi_audit_report.py` – Reporting Sidekick 📊
 
-After you’ve run multiple audits, merge the JSON outputs and feed them here.
+Merge multiple audits and export to CSV/Excel with nice risk colors (because slides).
 
-#### 💼 What It Does
-
-- Reads merged JSON (lists, JSON Lines, concatenated objects, etc.).
-- Exports to **CSV** or **Excel**.
-- Columns: `package, score_total_good, health_percent, risk_level, recent_release, dependency_count, indicators`.
-- Indicators = joined “highlights” from the audit JSON.
-- Excel adds frozen header, filters, and **Risk Level coloring**:
-  - Critical → Red
-  - High → Orange
-  - Medium → Yellow
-  - Low → Green
-  - Very Low → Blue
-
-#### 🧪 Usage
-
+**Usage**
 ```bash
 python pypi_audit_report.py merged.json -o report.csv --xlsx report.xlsx
 ```
 
 ---
 
----
-
 ### `nuget-audit.py` – NuGet/.NET Package Clairvoyant 🔮📦
 
-Ever wondered if that shiny C# package is a guardian angel or a gremlin in a DLL? This script stares into the NuGet crystal ball and tells you the vibes.
+**What It Does**
+- OSV.dev for NuGet ecosystem (version‑aware).
+- NuGet metadata spelunking (downloads, dates, license).
+- Optional GitHub posture.
+- Weighted score across Vulns/Freshness/Popularity/Repo/License.
+- Pretty PDF export with charts (because meetings).
+- `--skipssl` for proxied CI.
 
-#### 🧠 What It Actually Does
-- **OSV.dev check (NuGet ecosystem):** Looks up **version-specific** vulnerabilities. Use `--osv-only` for a quick vuln census.
-- **NuGet metadata spelunking:** Latest version, **per-version publish dates** (hydrated from registration pages), total downloads, license, project/repo URLs.
-- **GitHub repo posture (optional):** Stars, recent activity (`pushed_at`), archived/disabled flags, and license (skip with `--no-github`).
-- **Weighted Risk Score:** Blends five dimensions — **Vulnerabilities, Freshness, Popularity, Repo Posture, License** — into a crisp 0–100.  
-  Curious how the sausage is made? See **[NuGet Calculation Model](nuget-calculation.md)**.
-- **Pretty PDF output:** Summary page, **bar chart** of subscores (labels won’t clip!), and a tidy vulnerability table.
-- **Proxy-friendly:** `--skipssl` avoids TLS verification woes (only use behind a trusted proxy; auditors are watching 👀).
-
-#### 🧪 Usage
-
+**Usage**
 ```bash
-# List auditable packages from a lockfile
-python nuget-audit.py --list --path ./packages.lock.json
-
-# Audit a single package, JSON output
-python nuget-audit.py package --name Serilog --json
-
-# Audit a specific version and export a PDF
 python nuget-audit.py package --name Newtonsoft.Json --version 13.0.3 --pdf newtonsoft_audit.pdf
-
-# Audit a lockfile (top N), quick OSV-only pass
-python nuget-audit.py lockfile --path ./packages.lock.json --osv-only
 ```
 
-#### 🧷 Flags You’ll Actually Use
-- **Global:** `--list`, `--path PATH`, `--skipssl`
-- **package:** `--name NAME` · `--version VERSION` · `--json` · `--pdf PATH` · `--no-github` · `--osv-only`
-- **lockfile:** `--path PATH` · `--json` · `--pdf PATH` · `--no-github` · `--osv-only`
+---
 
-> **Security note:** `--skipssl` disables TLS certificate verification. Use only with a trusted corporate proxy or during local debugging.
+### NEW: `conda_forge_audit.py` – Conda‑Forge Package Auditor 🧪🐍
 
+Finally: a Conda‑Forge auditor with **OSV severity‑aware** vulnerability scoring and GitHub repo enrichment.
+
+**What It Does**
+- 🧬 **Anaconda.org** metadata: latest version, latest upload, license, total downloads, versions.
+- 🐛 **OSV.dev lookups**: package‑first (default ecosystem: **PyPI**), fallback to **repo URL**. Severity‑aware scoring (max CVSS + small count penalty).  
+  See the **[Conda‑Forge Calculation Manual](conda_forge_audit_calculation.md)** for all the tasty math.
+- 🐙 **GitHub posture (optional)**: stars, forks, open issues, recent push, archived/disabled.
+- 🧮 **Weighted overall score** across Vulnerabilities / Freshness / Popularity / Repo Posture / License.
+- 🧪 **CI‑friendly**: `--fail-below` prints a clear summary *and* exits non‑zero.
+- 🧾 **CSV/JSON** outputs + **bulk mode** (file with names).
+- 🧰 **Tunable weights** via `--weights freshness=0.4,...` (auto‑normalized).
+- 🌐 **Proxy fun**: `--skipssl` (or `NO_SSL_VERIFY=1`). Use sparingly; auditors are watching. 👀
+
+**Usage**
+```bash
+# Single package
+./conda_forge_audit.py --name numpy
+
+# JSON output
+./conda_forge_audit.py -n pandas --json
+
+# Bulk (one name per line), with CSV
+./conda_forge_audit.py --input packages.txt --csv conda_audit.csv
+
+# Gate CI
+./conda_forge_audit.py -n scikit-learn --fail-below 70
+
+# Explain scoring steps
+./conda_forge_audit.py -n xarray --explain
+
+# OSV ecosystem/name mapping
+./conda_forge_audit.py -n fastapi --osv-ecosystem PyPI --osv-name fastapi
+
+# In… spicy CI networks
+./conda_forge_audit.py -n numpy --skipssl
+```
+
+**Flags You’ll Actually Use**
+- `--json` · `--csv PATH` · `--input PATH` · `--explain`
+- `--weights KEY=VAL,...` (normalized)
+- `--fail-below N`
+- `--no-osv` · `--osv-ecosystem NAME` · `--osv-name NAME`
+- `--skipssl` (or `NO_SSL_VERIFY=1`)
+
+**Files**
+- Script: [`conda_forge_audit.py`](conda_forge_audit.py)  
+- Math (funny version): [`conda_forge_audit_calculation.md`](conda_forge_audit_calculation.md)
+
+---
 
 ## Quick Start 🏃‍♂️
 
@@ -204,11 +205,12 @@ pip install -r requirements.txt
 
 ## CI/CD 💚
 
-Wire `--fail-below` or `--fail-above` into your pipeline to gate merges:
+Wire `--fail-below` (or `--fail-above` where supported) into your pipeline to gate merges:
 
 ```bash
 python githubaudit.py yourorg yourrepo --fail-below 75
 python pypi_audit.py requests --fail-above 40
+./conda_forge_audit.py -n numpy --fail-below 70
 ```
 
 ---
@@ -225,12 +227,11 @@ See [SECURITY.md](SECURITY.md).
 
 PRs welcome. If you add new criteria, also:
 - Document it in this README,
-- Keep the scoring denominator fair.
+- Keep the scoring denominator fair,
+- Add a unit test or six (you animal).
 
 ---
 
-☕ Fun fact: These scripts were clearly written by an **over-caffeinated information security officer** who thought “relaxing spare time project” meant parsing JSON until 3 AM. If you feel personally attacked, don’t worry—you’re among friends here.
-
----
+☕ Fun fact: These scripts were clearly written by an **over‑caffeinated information security officer** who thought “relaxing spare time project” meant parsing JSON until 3 AM. If you feel personally attacked, don’t worry—you’re among friends here.
 
 Audit like a rockstar. 👨‍🎤
