@@ -597,7 +597,9 @@ def get_risk_level(score):
 
 def audit_repository(owner, repo, verify_ssl, output_file="repo_audit.json",
                      max_commits=500, fail_below=None, config=None,
-                     no_deps=False):
+                     no_deps=False,
+                     generate_sbom=False,
+                     sbom_output_file=None):
     if config is None:
         config = load_config()
     print(f"🔍 Auditing {owner}/{repo}...")
@@ -609,17 +611,48 @@ def audit_repository(owner, repo, verify_ssl, output_file="repo_audit.json",
     policy = has_security_policy(owner, repo, verify_ssl)
     has_any_issues = (issues['open'] + issues['closed']) > 0
     signed, sampled = count_signed_commits(owner, repo, verify_ssl, max_commits)
-
-    # Dependency graph / vulnerabilities (optional)
+    # Dependency graph / vulnerabilities (optional) + SBOM export (optional)
     dep_enabled = None
     dep_count = None
     vuln_counts = None
     alerts_total = None
-    if not no_deps:
+    sbom = None
+
+    # We fetch the SBOM if we need it for scoring OR if the user explicitly asked to export it.
+    if (not no_deps) or generate_sbom:
         dep_enabled, sbom = get_repo_sbom(owner, repo, verify_ssl)
+
+    if not no_deps:
         dep_count = parse_spdx_dependency_count(sbom)
         _, vuln_counts = get_dependabot_alerts(owner, repo, verify_ssl)
         alerts_total = sum(vuln_counts.values()) if vuln_counts else None
+
+    # Optional: write SBOM to disk (SPDX JSON as returned by GitHub).
+    sbom_status = None
+    sbom_written_to = None
+    if generate_sbom:
+        # Default file name if not provided
+        if not sbom_output_file:
+            safe_owner = owner.replace("/", "_")
+            safe_repo = repo.replace("/", "_")
+            sbom_output_file = f"{safe_owner}_{safe_repo}_sbom.spdx.json"
+
+        if dep_enabled and sbom:
+            try:
+                with open(sbom_output_file, "w", encoding="utf-8") as f:
+                    json.dump(sbom, f, indent=2)
+                sbom_status = "written"
+                sbom_written_to = sbom_output_file
+                print(f"📦 SBOM written to {sbom_output_file}")
+            except OSError as e:
+                sbom_status = "write_failed"
+                print(f"⚠️ Could not write SBOM to {sbom_output_file}: {e}")
+        elif dep_enabled and sbom is None:
+            sbom_status = "in_progress"
+            print("⏳ SBOM is enabled but GitHub says it is still being generated (HTTP 202). Try again shortly.")
+        else:
+            sbom_status = "unavailable"
+            print("🚫 SBOM not available (dependency graph disabled or insufficient permissions).")
 
     score, abandoned, breakdown = score_repo(
         last_commit,
@@ -668,6 +701,9 @@ def audit_repository(owner, repo, verify_ssl, output_file="repo_audit.json",
         "dependency_count": dep_count if dep_count is not None else None,
         "dependabot_open_alerts_total": alerts_total if alerts_total is not None else None,
         "dependabot_open_alerts_by_severity": vuln_counts if vuln_counts is not None else None,
+        
+        "sbom_export_status": sbom_status,
+        "sbom_export_file": sbom_written_to,
 
         "trust_score": score,
         "risk_level": risk
@@ -720,6 +756,8 @@ def main():
                         help="Write a default INI to PATH and exit")
     parser.add_argument("--no-deps", action="store_true",
                         help="Skip dependency analysis and Dependabot vulnerability checks")
+    parser.add_argument("--sbom", action="store_true", help="Fetch and write the repository SBOM (SPDX JSON) to disk")
+    parser.add_argument("--sbom-output", metavar="PATH", help="Where to write the SBOM file (default: <owner>_<repo>_sbom.spdx.json)")
     args = parser.parse_args()
 
     if args.write_default_config:
@@ -742,7 +780,9 @@ def main():
                      max_commits=args.max_commits,
                      fail_below=args.fail_below,
                      config=config,
-                     no_deps=args.no_deps)
+                     no_deps=args.no_deps,
+                     generate_sbom=args.sbom,
+                     sbom_output_file=args.sbom_output)
 
 if __name__ == '__main__':
     main()
