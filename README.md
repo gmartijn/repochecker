@@ -51,16 +51,15 @@ python githubaudit.py <owner> <repo> \
 ```
 ### NEW SBOM MODE!! What this does:
 
+add --sbom to the command line.
+
 The repo audit will: - Combine repository posture with dependency risk -
 Include supply-chain exposure into trust scoring - Provide stronger
-audit evidence for DORA/NIS2 discussions
+audit evidence for DORA/NIS2 discussions.
 
-> Side note: extremely useful when an auditor asks\
-> "But how do you know your dependencies are secure?"\
-> You can now answer with a file instead of eye contact.
-
-------------------------------------------------------------------------
-
+It will generate an Software Packet Data Exchange (SPDX) file formatted file 
+owner_project_sbom.spdx.json (e.g. gmartijn_repochecker_sbom.spdx.json), which 
+can be parsed using the dependency tool in this repository (sbom_supply_chain_risk.py).
 
 ------------------------------------------------------------------------
 
