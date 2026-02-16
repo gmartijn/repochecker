@@ -51,7 +51,7 @@ python githubaudit.py <owner> <repo> \
 ```
 ### NEW SBOM MODE!! What this does:
 
-add --sbom to the command line.
+add `--sbom` to the command line.
 
 The repo audit will: - Combine repository posture with dependency risk -
 Include supply-chain exposure into trust scoring - Provide stronger
